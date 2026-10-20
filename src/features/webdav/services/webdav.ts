@@ -21,26 +21,16 @@ import { createEmptyDatabase, toEncryptedBytes, unlockDatabase, loadDatabase } f
 import { validateNewDatabaseInput, toKey } from '@/services/record';
 import { Lock } from '@/utils/lock';
 
-const createCredentialContainer = async ({
-  name,
-  values,
-  credentials,
-  protectionDatabase,
-}: {
-  name: string;
-  values: Record<string, string>;
-  credentials: kdbx.Credentials;
-  protectionDatabase: kdbx.Kdbx;
-}) => {
+const encryptConnection = async (setup: WebDavSetup, database: kdbx.Kdbx) => {
   const kdbx = (await import('@/utils/kdbxweb')).default;
-  const database = kdbx.Kdbx.create(credentials, name);
-  if (protectionDatabase.versionMajor < 4) {
-    const rounds = protectionDatabase.header.keyEncryptionRounds;
+  const container = kdbx.Kdbx.create(database.credentials, 'WebDAV connection');
+  if (database.versionMajor < 4) {
+    const rounds = database.header.keyEncryptionRounds;
     if (!rounds || rounds < 1) throw new Error('The database uses an unsupported key transformation setting.');
-    database.setVersion(3);
-    database.header.keyEncryptionRounds = rounds;
+    container.setVersion(3);
+    container.header.keyEncryptionRounds = rounds;
   } else {
-    const sourceParameters = protectionDatabase.header.kdfParameters;
+    const sourceParameters = database.header.kdfParameters;
     if (!sourceParameters) throw new Error('The database uses an unsupported key derivation setting.');
     const sourceId = sourceParameters.get('$UUID');
     if (!(sourceId instanceof ArrayBuffer)) throw new Error('The database uses an unsupported key derivation setting.');
@@ -53,8 +43,8 @@ const createCredentialContainer = async ({
       throw new Error('The database uses an unsupported key derivation setting.');
     };
 
-    database.setKdf(kdfId);
-    const targetParameters = database.header.kdfParameters;
+    container.setKdf(kdfId);
+    const targetParameters = container.header.kdfParameters;
     if (!targetParameters) throw new Error('The credential container key derivation could not be configured.');
     if (kdfId === kdbx.Consts.KdfId.Argon2d || kdfId === kdbx.Consts.KdfId.Argon2id) {
       const parallelism = sourceParameters.get('P');
@@ -72,23 +62,14 @@ const createCredentialContainer = async ({
       throw new Error('The database uses an unsupported key derivation setting.');
     }
   }
-  const entry = database.createEntry(database.getDefaultGroup());
+  const entry = container.createEntry(container.getDefaultGroup());
   entry.fields.set('Title', 'Connection credentials');
 
-  for (const [field, value] of Object.entries(values)) {
-    entry.fields.set(field, kdbx.ProtectedValue.fromString(value));
-  }
+  entry.fields.set('Username', kdbx.ProtectedValue.fromString(setup.username));
+  entry.fields.set('Password', kdbx.ProtectedValue.fromString(setup.password));
 
-  return await toEncryptedBytes(database);
+  return await toEncryptedBytes(container);
 };
-
-const encryptConnection = (setup: WebDavSetup, database: kdbx.Kdbx) =>
-  createCredentialContainer({
-    name: 'WebDAV connection',
-    values: { Username: setup.username, Password: setup.password },
-    credentials: database.credentials,
-    protectionDatabase: database,
-  });
 
 export const importWebDavRecord = async ({
   databasePassword,
