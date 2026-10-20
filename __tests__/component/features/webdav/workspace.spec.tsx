@@ -59,6 +59,36 @@ const Harness = ({
 };
 
 describe('WebDAV workspace races', () => {
+  it.each(['password generator', 'tag search'])(
+    'continues syncing after canceling %s input without changing the entry',
+    async (widget) => {
+      using context = await fixture();
+      const { session, remoteBytes, fetch } = context;
+      const get = Promise.withResolvers<Response>();
+      fetch.mockReturnValueOnce(get.promise);
+      const user = userEvent.setup();
+      render(<Harness initial={session} />);
+      await user.click(screen.getByRole('button', { name: /Test Entry test-user/ }));
+
+      if (widget === 'password generator') {
+        await user.click(screen.getByRole('button', { name: 'Generate password' }));
+        await user.clear(screen.getByLabelText('Length'));
+        await user.type(screen.getByLabelText('Length'), '24');
+        await user.click(screen.getByRole('button', { name: 'Close' }));
+      } else {
+        await user.type(screen.getByLabelText('Tags'), 'search');
+        await user.keyboard('{Escape}');
+      }
+
+      expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+      await act(async () => get.resolve(response(remoteBytes)));
+      await waitFor(() => expect(screen.getByLabelText('Title')).toHaveValue('Remote title'));
+      expect(screen.getByText('Synced')).toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: 'Lock workspace' }));
+      expect(screen.getByRole('button', { name: 'Reopen' })).toBeInTheDocument();
+    },
+  );
+
   it('keeps a mounted dirty draft and its cache when an in-flight GET resolves; discard resumes the deferred pull', async () => {
     using context = await fixture();
     const { session, record, remoteBytes, fetch } = context;
