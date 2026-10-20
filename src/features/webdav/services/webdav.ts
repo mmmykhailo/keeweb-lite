@@ -310,19 +310,18 @@ export const prepareWebDavSync = async ({
     const record = await getRecord(id);
     if (record.type !== 'webdav') throw new Error('WebDAV database was removed.');
     const load = async (bytes: Uint8Array) => loadDatabase({ encryptedBytes: bytes, credentials });
-    const original = await load(record.kdbx.encryptedBytes);
-    check();
     let snapshot = await connection.read(signal);
     for (let attempt = 0; attempt < 3; attempt++) {
       check();
+      const candidate = await load(record.kdbx.encryptedBytes);
+      check();
       const remote = await load(snapshot.bytes);
-      if (!original.getDefaultGroup().uuid.equals(remote.getDefaultGroup().uuid)) {
+      if (!candidate.getDefaultGroup().uuid.equals(remote.getDefaultGroup().uuid)) {
         throw new Error('The WebDAV file is a different database. The local cache has been kept.');
       }
       if (!record.synchronization.pending || equalBytes(record.kdbx.encryptedBytes, snapshot.bytes)) {
         return { record, database: remote, bytes: snapshot.bytes };
       }
-      const candidate = await load(record.kdbx.encryptedBytes);
       if (record.synchronization.localEditState)
         candidate.setLocalEditState(structuredClone(record.synchronization.localEditState));
       candidate.merge(remote);
