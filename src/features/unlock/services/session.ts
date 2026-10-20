@@ -1,4 +1,6 @@
 import type kdbxweb from '@/utils/kdbxweb';
+import { unlockWebDav } from '@/features/webdav/services/webdav';
+import type { WebDavConnection } from '@/features/webdav/repositories/webdav';
 import type { Dispatch, SetStateAction } from 'react';
 import { updateRecord, type FileRecord, type PersistedFileRecord, type QuickUnlock } from '@/repositories/record';
 import { unlockDatabase } from '@/services/database';
@@ -9,6 +11,8 @@ export type UnlockSession = {
   database: kdbxweb.Kdbx;
   record: FileRecord;
   version: number;
+  webDav?: WebDavConnection;
+  webDavError?: Error;
 };
 
 export const openDatabase = ({ record, password }: { record: PersistedFileRecord; password: string }) => {
@@ -38,5 +42,6 @@ export const startSession = async ({
 };
 
 export const unlockSession = async ({ record, password }: { record: PersistedFileRecord; password: string }) => {
+  if (record.type === 'webdav') return unlockWebDav(record.id, password);
   return startSession({ database: await openDatabase({ record, password }), record });
 };

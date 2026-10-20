@@ -2,6 +2,8 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import { UnsavedChangesDialog } from '@/features/workspace/components/unsaved-changes-dialog';
 
 type SafeNetContextValue = {
+  isDirty: boolean;
+  isDirtyNow: () => boolean;
   guardNavigation: (action: () => void) => void;
   setDirty: (isDirty: boolean) => void;
   registerDiscard: (discard: (() => void) | null) => void;
@@ -11,6 +13,12 @@ const SafeNetContext = createContext<SafeNetContextValue | null>(null);
 
 export const SafeNetProvider = ({ children }: { children: ReactNode }) => {
   const [isDirty, setIsDirty] = useState(false);
+  const dirtyRef = useRef(false);
+  const setDirty = useCallback((value: boolean) => {
+    dirtyRef.current = value;
+    setIsDirty(value);
+  }, []);
+  const isDirtyNow = useCallback(() => dirtyRef.current, []);
   const [pendingNavigation, setPendingNavigation] = useState<(() => void) | null>(null);
   const discardRef = useRef<(() => void) | null>(null);
 
@@ -40,7 +48,7 @@ export const SafeNetProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   const handleConfirmDiscard = () => {
-    setIsDirty(false);
+    setDirty(false);
     setPendingNavigation(null);
     discardRef.current?.(); // Reset whatever form is open so its dirty state can't diverge from isDirty
 
@@ -48,7 +56,7 @@ export const SafeNetProvider = ({ children }: { children: ReactNode }) => {
   };
 
   return (
-    <SafeNetContext.Provider value={{ guardNavigation, setDirty: setIsDirty, registerDiscard }}>
+    <SafeNetContext.Provider value={{ isDirty, isDirtyNow, guardNavigation, setDirty, registerDiscard }}>
       {children}
       <UnsavedChangesDialog
         open={pendingNavigation !== null}

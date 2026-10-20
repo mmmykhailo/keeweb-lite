@@ -2,7 +2,7 @@ import './mocks';
 import { afterAll, afterEach, beforeAll, expect } from 'vitest';
 import { cleanup, configure } from '@testing-library/react';
 import { auth } from '@/features/google-drive/repositories/google-drive';
-import { clearRecords } from '@/repositories/record';
+import { clear } from 'idb-keyval';
 import { createMockServer } from './utils/mock-server';
 import '@testing-library/jest-dom/vitest';
 
@@ -17,7 +17,7 @@ beforeAll(() => {
 
 afterEach(async () => {
   cleanup();
-  await clearRecords();
+  await clear();
   await auth.clearAccessToken();
 
   // here is the solution used https://github.com/mswjs/msw/issues/946#issuecomment-1572768939

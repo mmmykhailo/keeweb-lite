@@ -6,7 +6,7 @@ keeweb-lite is a lightweight, web-only password manager inspired by [KeeWeb](htt
 
 ## Features
 
-- Source types: `Local` and optional `Google Drive`.
+- Source types: `Local`, `WebDAV`, and optional `Google Drive`.
 - Unlock with password and optional key file.
 - Optional biometric unlock with a passkey (WebAuthn PRF): enter the password once, confirm the warning (the passkey is used in an unintended way and stays in your password manager after the record is removed), then use the fingerprint button.
 - Key file stays in runtime memory during unlock flow.

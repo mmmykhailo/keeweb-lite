@@ -1,16 +1,27 @@
-import { createContext, useContext, useState, type ReactNode } from 'react';
+import { createContext, useContext, useState, useRef, useCallback, type ReactNode } from 'react';
 
 type EntryMutationContextValue = {
   isMutating: boolean;
+  isMutatingNow: () => boolean;
   setMutating: (isMutating: boolean) => void;
 };
 
 const EntryMutationContext = createContext<EntryMutationContextValue | null>(null);
 
 export const EntryMutationProvider = ({ children }: { children: ReactNode }) => {
-  const [isMutating, setMutating] = useState(false);
+  const [isMutating, setIsMutating] = useState(false);
+  const mutationRef = useRef(false);
+  const setMutating = useCallback((value: boolean) => {
+    mutationRef.current = value;
+    setIsMutating(value);
+  }, []);
+  const isMutatingNow = useCallback(() => mutationRef.current, []);
 
-  return <EntryMutationContext.Provider value={{ isMutating, setMutating }}>{children}</EntryMutationContext.Provider>;
+  return (
+    <EntryMutationContext.Provider value={{ isMutating, isMutatingNow, setMutating }}>
+      {children}
+    </EntryMutationContext.Provider>
+  );
 };
 
 export const useEntryMutation = () => {

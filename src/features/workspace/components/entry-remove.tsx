@@ -23,10 +23,11 @@ type EntryRemoveProps = {
   database: kdbxweb.Kdbx;
   entry: kdbxweb.KdbxEntry;
   record: FileRecord;
+  webDavSignal?: AbortSignal;
   onEntryRemove: (result: EntryMutationResult) => void;
 };
 
-export const EntryRemove = ({ database, entry, record, onEntryRemove }: EntryRemoveProps) => {
+export const EntryRemove = ({ database, entry, record, onEntryRemove, webDavSignal }: EntryRemoveProps) => {
   const { guardNavigation } = useSafeNet();
   const { isMutating, setMutating } = useEntryMutation();
   const [isOpen, setIsOpen] = useState(false);
@@ -36,11 +37,13 @@ export const EntryRemove = ({ database, entry, record, onEntryRemove }: EntryRem
     try {
       const entryUuid = entry.uuid.toString();
 
-      onEntryRemove(await removeEntry({ database, record, entryUuid }));
+      const result = await removeEntry({ database, record, entryUuid, signal: webDavSignal });
+      webDavSignal?.throwIfAborted();
+      onEntryRemove(result);
 
       toast.success('Entry removed.');
     } catch (error) {
-      toast.error(getErrorMessage({ error, fallback: 'Entry removal failed.' }));
+      if (!webDavSignal?.aborted) toast.error(getErrorMessage({ error, fallback: 'Entry removal failed.' }));
     } finally {
       setMutating(false);
     }

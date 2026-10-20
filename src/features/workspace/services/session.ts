@@ -6,6 +6,7 @@ import {
   type FileRecord,
   type SyncableRecord,
 } from '@/repositories/record';
+import { updateWebDavDatabase } from '@/features/webdav/services/webdav';
 import { loadDatabase, toEncryptedBytes } from '@/services/database';
 import { getProvider } from '@/services/provider-registry';
 import { SyncConflictError } from '@/services/provider';
@@ -18,12 +19,15 @@ export const updateRecordDatabase = async <Result>({
   database,
   record,
   update,
+  signal,
 }: {
   database: kdbxweb.Kdbx;
   record: FileRecord;
+  signal?: AbortSignal;
   update: (nextDatabase: kdbxweb.Kdbx) => Result | Promise<Result>;
 }): Promise<[nextDatabase: kdbxweb.Kdbx, nextRecord: FileRecord, result: Result]> => {
   return updateRecordDatabaseLock.runInLock(async () => {
+    if (record.type === 'webdav') return updateWebDavDatabase({ database, record, update, signal });
     const { storage } = getProvider(record);
     const nextDatabase = await storage.load({ database, record });
     const result = await update(nextDatabase);
