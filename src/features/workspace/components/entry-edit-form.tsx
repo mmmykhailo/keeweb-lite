@@ -72,6 +72,7 @@ export const EntryEditForm = ({ database, entry, record, onEntrySave, webDavSign
     handleSubmit,
     reset,
     setValue,
+    subscribe,
     formState: { isDirty, isSubmitting },
   } = useForm<EntryEditValues>({
     defaultValues: getEntryValues(entry),
@@ -93,8 +94,15 @@ export const EntryEditForm = ({ database, entry, record, onEntrySave, webDavSign
     if (record.type !== 'webdav') setDirty(isDirty);
   }, [isDirty, setDirty, record.type]);
   useLayoutEffect(() => {
-    if (record.type === 'webdav') setDirty(isDirty);
-  }, [isDirty, setDirty, record.type]);
+    if (record.type !== 'webdav') return;
+    setDirty(isDirty);
+    return subscribe({
+      formState: { isDirty: true },
+      callback: ({ isDirty }) => {
+        if (isDirty !== undefined) setDirty(isDirty);
+      },
+    });
+  }, [isDirty, setDirty, record.type, subscribe]);
 
   useEffect(() => {
     return () => setDirty(false);
@@ -180,7 +188,6 @@ export const EntryEditForm = ({ database, entry, record, onEntrySave, webDavSign
   return (
     <form
       className="flex min-h-0 flex-1 flex-col"
-      onChangeCapture={record.type === 'webdav' ? () => setDirty(true) : undefined}
       onSubmit={(e) => {
         void handleSaveSubmit(e);
       }}
