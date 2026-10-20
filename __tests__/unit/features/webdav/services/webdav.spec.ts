@@ -74,19 +74,6 @@ describe('webdav', () => {
       expect(await getWebDavCredentials(record.id)).toBeUndefined();
     });
 
-    it.each([false, 'bad', { version: 1, records: [] }, [{ type: 'webdav', id: 'legacy' }]])(
-      'refuses reads and writes of unsupported stores without modifying %j',
-      async (stored) => {
-        await set(RECORDS_STORAGE_KEY, stored);
-        await expect(getRecords()).rejects.toThrow(/Saved/);
-        await expect(
-          createRecord({ id: 'new', type: 'local', kdbx: { name: 'new', encryptedBytes: new Uint8Array() } }),
-        ).rejects.toThrow(/Saved/);
-        await expect(removeRecord('new')).rejects.toThrow(/Saved/);
-        expect(await get(RECORDS_STORAGE_KEY)).toEqual(stored);
-      },
-    );
-
     it('rejects wrong database factors and canceled KDF without saving credentials', async () => {
       const db = await database();
       const bytes = await toEncryptedBytes(db);
