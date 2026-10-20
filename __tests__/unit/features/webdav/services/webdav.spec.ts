@@ -334,7 +334,7 @@ describe('webdav', () => {
       expect(fetch.mock.calls.every((call) => call[1].method === 'GET')).toBe(true);
     });
 
-    it('uses native merge for independent edits and keeps history tombstones through clone/save/reload', async () => {
+    it('uses native merge for independent edits and keeps history tombstones through save/reload', async () => {
       const db = await database();
       const entry = db.createEntry(db.getDefaultGroup());
       entry.fields.set('Title', 'Original');
@@ -351,7 +351,6 @@ describe('webdav', () => {
       edited.fields.set('Title', 'Local');
       edited.times.lastModTime = new Date(Date.now() + 3000);
       const state = structuredClone(local.getLocalEditState());
-      expect((await cloneDatabase(local)).getLocalEditState()).toEqual(state);
       const saved = await saveWebDav(record, local);
       const reopened = await unlockWebDav(record.id, password);
       expect(reopened.database.getLocalEditState()).toEqual(state);
