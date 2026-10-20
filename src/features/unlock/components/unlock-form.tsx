@@ -195,6 +195,7 @@ export const UnlockForm = ({
 
       <div className="flex items-center justify-between gap-2 pt-3">
         <RecordRemove
+          isWebDav={records.some((record) => record.id === selectedRecordId && record.type === 'webdav')}
           recordId={selectedRecordId}
           disabled={!selectedRecordId || isBusy}
           onRecordRemove={handleRemove}

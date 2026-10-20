@@ -1,3 +1,4 @@
+import { useEntryMutation } from '@/features/workspace/hooks/use-entry-mutation';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import type { SetSession, UnlockSession } from '@/features/unlock/services/session';
@@ -8,13 +9,32 @@ import { useSync } from '@/features/workspace/hooks/use-sync';
 type SyncStatusProps = {
   session: UnlockSession;
   setSession: SetSession;
+  onWebDavApply?: (applying: boolean) => void;
 };
 
-export const SyncStatus = ({ session, setSession }: SyncStatusProps) => {
-  const { guardNavigation } = useSafeNet();
-  const { loading: isSyncing, error: syncError, triggerSync, retrySync } = useSync({ ...session, setSession });
+export const SyncStatus = ({ session, setSession, onWebDavApply }: SyncStatusProps) => {
+  const { guardNavigation, isDirty, isDirtyNow } = useSafeNet();
+  const { isMutating, isMutatingNow } = useEntryMutation();
+  const {
+    loading: isSyncing,
+    error: syncError,
+    retrySync,
+    triggerSync,
+  } = useSync({
+    ...session,
+    setSession,
+    onWebDavApply,
+    busy: isDirty || isMutating,
+    isBusyNow: () => isDirtyNow() || isMutatingNow(),
+  });
 
-  const syncStatus = isSyncing ? 'syncing' : syncError ? 'error' : 'synced';
+  const syncStatus = isSyncing
+    ? 'syncing'
+    : syncError
+      ? 'error'
+      : session.record.type === 'webdav' && session.record.synchronization.pending
+        ? 'saved-locally'
+        : 'synced';
 
   const onSync = () => {
     switch (syncStatus) {
@@ -24,6 +44,9 @@ export const SyncStatus = ({ session, setSession }: SyncStatusProps) => {
         break;
       case 'syncing':
         toast.success('Database syncing.');
+        break;
+      case 'saved-locally':
+        toast.success('Saved locally; waiting for WebDAV synchronization.');
         break;
       case 'synced':
         triggerSync();
@@ -45,18 +68,21 @@ export const SyncStatus = ({ session, setSession }: SyncStatusProps) => {
           ? 'Sync error — click to retry'
           : syncStatus === 'syncing'
             ? 'Syncing'
-            : 'Synced — click to sync now'
+            : syncStatus === 'saved-locally'
+              ? 'Saved locally'
+              : 'Synced — click to sync now'
       }
       type="button"
     >
       <span
         className={cn('inline-block size-2 rounded-full', {
           'bg-green-500': syncStatus === 'synced',
-          'bg-orange-500': syncStatus === 'syncing',
+          'bg-orange-500': syncStatus === 'syncing' || syncStatus === 'saved-locally',
           'bg-destructive': syncStatus === 'error',
         })}
       />
       <span className="text-foreground">
+        {syncStatus === 'saved-locally' && 'Saved locally'}
         {syncStatus === 'synced' && 'Synced'}
         {syncStatus === 'syncing' && 'Syncing'}
         {syncStatus === 'error' && 'Sync error'}

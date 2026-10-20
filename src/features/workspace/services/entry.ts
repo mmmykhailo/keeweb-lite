@@ -128,6 +128,7 @@ export type EntryUpdateValues = {
 type UpdateEntryInput = {
   database: kdbxweb.Kdbx;
   record: FileRecord;
+  signal?: AbortSignal;
   entryUuid: string;
   values: EntryUpdateValues;
 };
@@ -164,14 +165,16 @@ export const applyEntryValues = (entry: kdbxweb.KdbxEntry, values: EntryUpdateVa
 type MutateEntryInput = {
   database: kdbxweb.Kdbx;
   record: FileRecord;
+  signal?: AbortSignal;
   entryUuid: string;
   mutate: (nextDatabase: kdbxweb.Kdbx, nextEntry: kdbxweb.KdbxEntry) => void;
 };
 
-const mutateEntry = async ({ database, record, entryUuid, mutate }: MutateEntryInput) => {
+const mutateEntry = async ({ database, record, entryUuid, mutate, signal }: MutateEntryInput) => {
   const [nextDatabase, nextRecord, nextEntryUuid] = await updateRecordDatabase({
     database,
     record,
+    signal,
     update: (updatedDatabase) => {
       const nextEntry = findEntryByUuid(updatedDatabase, entryUuid);
 
@@ -197,12 +200,14 @@ export type EntryMutationResult<EntryUuid extends kdbxweb.KdbxUuid | null = kdbx
 export const saveEntry = async ({
   database,
   record,
+  signal,
   entryUuid,
   values,
 }: UpdateEntryInput): Promise<EntryMutationResult<kdbxweb.KdbxUuid>> => {
   return mutateEntry({
     database,
     record,
+    signal,
     entryUuid,
     mutate: (_, entry) => applyEntryValues(entry, values),
   });
@@ -211,17 +216,20 @@ export const saveEntry = async ({
 type CreateEntryInput = {
   database: kdbxweb.Kdbx;
   record: FileRecord;
+  signal?: AbortSignal;
   selectFilter: SelectFilter;
 };
 
 export const createEntry = async ({
   database,
   record,
+  signal,
   selectFilter,
 }: CreateEntryInput): Promise<EntryMutationResult<kdbxweb.KdbxUuid>> => {
   const [nextDatabase, nextRecord, nextEntryUuid] = await updateRecordDatabase({
     database,
     record,
+    signal,
     update: (updatedDatabase) => {
       const group = isGroupSelect(selectFilter)
         ? findGroupByUuid(updatedDatabase, selectFilter)
@@ -256,17 +264,20 @@ export const isEntryInRecycleBin = (database: RecycleAwareDatabase, entry: kdbxw
 type RemoveEntryInput = {
   database: kdbxweb.Kdbx;
   record: FileRecord;
+  signal?: AbortSignal;
   entryUuid: string;
 };
 
 export const removeEntry = async ({
   database,
   record,
+  signal,
   entryUuid,
 }: RemoveEntryInput): Promise<EntryMutationResult<null>> => {
   const { nextDatabase, nextRecord } = await mutateEntry({
     database,
     record,
+    signal,
     entryUuid,
     mutate: (nextDatabase, nextEntry) => {
       if (isEntryInRecycleBin(nextDatabase, nextEntry)) {
@@ -283,11 +294,13 @@ export const removeEntry = async ({
 export const restoreEntry = async ({
   database,
   record,
+  signal,
   entryUuid,
 }: RemoveEntryInput): Promise<EntryMutationResult<null>> => {
   const { nextDatabase, nextRecord } = await mutateEntry({
     database,
     record,
+    signal,
     entryUuid,
     mutate: (nextDatabase, nextEntry) => nextDatabase.move(nextEntry, nextDatabase.getDefaultGroup()),
   });

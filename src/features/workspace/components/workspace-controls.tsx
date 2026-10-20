@@ -8,9 +8,10 @@ type WorkspaceControlsProps = {
   session: UnlockSession;
   setSession: SetSession;
   onWorkspaceLock: () => void;
+  onWebDavApply?: (applying: boolean) => void;
 };
 
-export const WorkspaceControls = ({ session, setSession, onWorkspaceLock }: WorkspaceControlsProps) => {
+export const WorkspaceControls = ({ session, setSession, onWorkspaceLock, onWebDavApply }: WorkspaceControlsProps) => {
   const { record } = session;
   const { sync, isConfigured, label } = getProvider(record);
 
@@ -21,9 +22,9 @@ export const WorkspaceControls = ({ session, setSession, onWorkspaceLock }: Work
           <span className="min-w-0 truncate font-medium text-foreground">
             {record.kdbx.name} ({record.type})
           </span>
-          {sync &&
+          {(sync || record.type === 'webdav') &&
             (isConfigured() ? (
-              <SyncStatus session={session} setSession={setSession} />
+              <SyncStatus session={session} setSession={setSession} onWebDavApply={onWebDavApply} />
             ) : (
               <SyncUnavailable label={label} />
             ))}
