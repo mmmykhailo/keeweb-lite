@@ -89,12 +89,22 @@ export const equalBytes = (left: Uint8Array, right: Uint8Array) =>
   left.length === right.length && left.every((byte, index) => byte === right[index]);
 
 const decodeRecords = (value: unknown): PersistedFileRecord[] => {
-  if (value == null) return [];
-  const result = fileRecordsSchema.safeParse(value);
-  if (!result.success) {
-    throw new Error('Saved database records are unsupported or corrupt. Browser data has been left untouched.');
+  if (value == null) {
+    return [];
   }
-  return result.data;
+
+  const parseResult = fileRecordsSchema.safeParse(value);
+  if (parseResult.success) {
+    return parseResult.data;
+  }
+
+  console.error('Invalid stored records:', parseResult.error);
+
+  throw new Error(
+    `Saved records can't be read. Fix the "${RECORDS_STORAGE_KEY}" key in this site's IndexedDB, ` +
+      `or clear this site's data to start over (this deletes all local databases).`,
+    { cause: parseResult.error },
+  );
 };
 
 const credentialKey = (id: string) => `keeweb-lite.credentials.${id}`;
@@ -145,27 +155,7 @@ const transactWebDav = <T>(
     ),
   );
 
-const readRecords = async () => {
-  const value = await get<unknown>(RECORDS_STORAGE_KEY);
-  if (value == null) {
-    return [];
-  }
-
-  const parseResult = fileRecordsSchema.safeParse(value);
-  if (parseResult.success) {
-    return parseResult.data;
-  }
-
-  // stored data is only written by this app and always matches the schema, so this isn't expected to happen
-  // in production; it's a safety net that keeps the data untouched so the user can fix it by hand
-  console.error('Invalid stored records:', parseResult.error);
-
-  throw new Error(
-    `Saved records can't be read. Fix the "${RECORDS_STORAGE_KEY}" key in this site's IndexedDB, ` +
-      `or clear this site's data to start over (this deletes all local databases).`,
-    { cause: parseResult.error },
-  );
-};
+const readRecords = async () => decodeRecords(await get<unknown>(RECORDS_STORAGE_KEY));
 
 export const getRecords = async () => {
   return lock.runInLock(readRecords);
