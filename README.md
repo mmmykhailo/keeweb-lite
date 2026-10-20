@@ -77,6 +77,10 @@ Use Docker Compose:
 docker compose up -d --build # App is available at `http://localhost:4321`.
 ```
 
+## WebDAV Setup
+
+Use a full HTTPS file URL with Basic credentials or an app password. The parent collection must exist. For cross-origin access, allow the app origin, GET/PUT, and the `Authorization`, `Content-Type`, `If-Match`, and `If-None-Match` headers. Expose a strong ETag with `Access-Control-Expose-Headers: ETag`; without it, updates are disabled.
+
 ## Google Drive Setup
 
 Google Drive is optional. It is enabled only when both `PUBLIC_GOOGLE_CLIENT_ID` and `PUBLIC_GOOGLE_APP_ID` are set at build time. Without them, the Google scripts are not loaded and the Google Drive import and create options are hidden. Records saved earlier from Google Drive are still listed. They can be unlocked, edited and downloaded locally, but they are not synced until the app is built with Google Drive enabled.
