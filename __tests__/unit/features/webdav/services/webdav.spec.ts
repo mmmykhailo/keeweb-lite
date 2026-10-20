@@ -425,6 +425,112 @@ describe('webdav', () => {
       expect(merged.history.map((item) => item.fields.get('Title'))).toContain('Local version');
     });
 
+    it.each(['fields', 'binaries', 'tags', 'expiry', 'auto-type', 'custom-data'])(
+      'keeps both databases unchanged when same-second edits conflict in %s',
+      async (kind) => {
+        const db = await database();
+        const entry = db.createEntry(db.getDefaultGroup());
+        entry.fields.set('Title', 'Original');
+        entry.times.lastModTime = new Date('2026-01-01T00:00:00Z');
+        using context = await imported(db);
+        const { record, bytes, fetch } = context;
+        const local = await unlockDatabase({ encryptedBytes: bytes, password });
+        const remote = await unlockDatabase({ encryptedBytes: bytes, password });
+        const localEntry = local.getDefaultGroup().entries[0];
+        const remoteEntry = remote.getDefaultGroup().entries[0];
+        localEntry.pushHistory();
+        remoteEntry.pushHistory();
+        localEntry.fields.set('Title', 'Edited');
+        remoteEntry.fields.set('Title', 'Edited');
+        localEntry.times.lastModTime = new Date('2026-01-01T00:00:02.100Z');
+        remoteEntry.times.lastModTime = new Date('2026-01-01T00:00:02.900Z');
+        switch (kind) {
+          case 'fields':
+            localEntry.fields.set('Password', kdbx.ProtectedValue.fromString('local password'));
+            remoteEntry.fields.set('Password', kdbx.ProtectedValue.fromString('remote password'));
+            break;
+          case 'binaries':
+            localEntry.binaries.set('file', await local.binaries.add(new Uint8Array([1]).buffer));
+            remoteEntry.binaries.set('file', await remote.binaries.add(new Uint8Array([2]).buffer));
+            break;
+          case 'tags':
+            localEntry.tags = ['local'];
+            remoteEntry.tags = ['remote'];
+            break;
+          case 'expiry':
+            localEntry.times.expires = true;
+            remoteEntry.times.expires = true;
+            localEntry.times.expiryTime = new Date('2026-02-01T00:00:00Z');
+            remoteEntry.times.expiryTime = new Date('2026-03-01T00:00:00Z');
+            break;
+          case 'auto-type':
+            localEntry.autoType.defaultSequence = '{PASSWORD}';
+            remoteEntry.autoType.defaultSequence = '{USERNAME}';
+            break;
+          case 'custom-data':
+            localEntry.customData = new Map([['setting', { value: 'local' }]]);
+            remoteEntry.customData = new Map([['setting', { value: 'remote' }]]);
+            break;
+        }
+        const saved = await saveWebDav(record, local);
+        const remoteBytes = await toEncryptedBytes(remote);
+        fetch.mockClear();
+        fetch.mockImplementation(() => Promise.resolve(response(remoteBytes)));
+
+        await expect(prepare(saved, local)).rejects.toThrow('Conflicting entry changes have the same timestamp');
+
+        expect(await getRecord(record.id)).toEqual(saved);
+        expect(fetch.mock.calls.map((call) => call[1].method)).toEqual(['GET']);
+      },
+    );
+
+    it('allows same-second edits when the remote version is already in local history', async () => {
+      const db = await database();
+      const entry = db.createEntry(db.getDefaultGroup());
+      entry.fields.set('Title', 'Original');
+      entry.times.lastModTime = new Date('2026-01-01T00:00:02.100Z');
+      using context = await imported(db);
+      const { record, bytes, fetch } = context;
+      const local = await unlockDatabase({ encryptedBytes: bytes, password });
+      const localEntry = local.getDefaultGroup().entries[0];
+      localEntry.pushHistory();
+      localEntry.fields.set('Title', 'Edited');
+      localEntry.times.lastModTime = new Date('2026-01-01T00:00:02.900Z');
+      const saved = await saveWebDav(record, local);
+      fetch.mockClear();
+
+      const prepared = await prepare(saved, local);
+      const accepted = await acceptWebDavSync(prepared, new AbortController().signal, () => true);
+
+      expect(accepted.status).toBe('applied');
+      const merged = prepared.database.getDefaultGroup().entries[0];
+      expect(merged.fields.get('Title')).toBe('Edited');
+      expect(merged.history.map((version) => version.fields.get('Title'))).toContain('Original');
+      expect(fetch.mock.calls.map((call) => call[1].method)).toEqual(['GET', 'PUT']);
+    });
+
+    it('ignores protection salts, field ordering and access times for otherwise identical entries', async () => {
+      const db = await database();
+      const entry = db.createEntry(db.getDefaultGroup());
+      entry.fields.set('Password', kdbx.ProtectedValue.fromString('same password'));
+      using context = await imported(db);
+      const { record, bytes, fetch } = context;
+      const local = await unlockDatabase({ encryptedBytes: bytes, password });
+      const localEntry = local.getDefaultGroup().entries[0];
+      localEntry.fields = new Map([...localEntry.fields].toReversed());
+      localEntry.fields.set('Password', kdbx.ProtectedValue.fromString('same password'));
+      localEntry.times.lastAccessTime = new Date('2026-01-01T00:00:10Z');
+      local.createEntry(local.getDefaultGroup()).fields.set('Title', 'New entry');
+      const saved = await saveWebDav(record, local);
+
+      const prepared = await prepare(saved, local);
+
+      expect(prepared.database.getDefaultGroup().entries.map((version) => version.fields.get('Title'))).toContain(
+        'New entry',
+      );
+      expect(fetch.mock.calls.some((call) => call[1].method === 'PUT')).toBe(true);
+    });
+
     it('rejects a local Save canceled during encryption', async () => {
       using context = await imported();
       const { record, db } = context;
