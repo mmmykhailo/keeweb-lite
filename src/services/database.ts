@@ -93,9 +93,7 @@ export const createEmptyDatabase = async ({
 
 export const cloneDatabase = async (database: kdbxweb.Kdbx): Promise<kdbxweb.Kdbx> => {
   const kdbxweb = await loadKdbxweb();
-  const editState = structuredClone(database.getLocalEditState());
   const encryptedBytes = await serialize(database);
-  const clone = await kdbxweb.Kdbx.load(encryptedBytes, database.credentials);
-  clone.setLocalEditState(editState);
-  return clone;
+
+  return kdbxweb.Kdbx.load(encryptedBytes, database.credentials);
 };
