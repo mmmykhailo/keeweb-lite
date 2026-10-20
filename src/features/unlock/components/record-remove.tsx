@@ -17,10 +17,11 @@ import {
 type RecordRemoveProps = {
   recordId: string;
   disabled?: boolean;
+  isWebDav?: boolean;
   onRecordRemove: () => void;
 };
 
-export const RecordRemove = ({ recordId, disabled, onRecordRemove }: RecordRemoveProps) => {
+export const RecordRemove = ({ recordId, disabled, onRecordRemove, isWebDav }: RecordRemoveProps) => {
   const [isOpen, setIsOpen] = useState(false);
   const [isRemoving, setIsRemoving] = useState(false);
 
@@ -48,7 +49,11 @@ export const RecordRemove = ({ recordId, disabled, onRecordRemove }: RecordRemov
       <DialogContent showCloseButton={false} className="sm:max-w-xs">
         <DialogHeader className="grid grid-rows-[auto_1fr] place-items-center gap-1.5 text-center">
           <DialogTitle>Remove record?</DialogTitle>
-          <DialogDescription>Are you sure you want to remove this record?</DialogDescription>
+          <DialogDescription>
+            {isWebDav
+              ? 'WebDAV changes saved only in this browser will be lost. Download them before removing this record and its saved connection.'
+              : 'Are you sure you want to remove this record?'}
+          </DialogDescription>
         </DialogHeader>
         <DialogFooter className="grid grid-cols-2">
           <DialogClose asChild>
