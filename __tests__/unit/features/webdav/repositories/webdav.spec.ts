@@ -24,10 +24,13 @@ describe('WebDAV transport', () => {
     expect(() => createWebDavConnection({ ...setup, username: 'user:other' })).toThrow('colon');
   });
 
-  it('reads bytes and their exact quoted ETag in one authenticated request', async () => {
+  it.each([
+    { username: setup.username, password: setup.password },
+    { username: 'üser', password: 'päss 🔐' },
+  ])('reads bytes and their exact quoted ETag with credentials %j', async (credentials) => {
     const fetch = vi.fn().mockResolvedValue(response('"opaque:123"'));
     using _fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(fetch);
-    const snapshot = await createWebDavConnection(setup).read();
+    const snapshot = await createWebDavConnection({ ...setup, ...credentials }).read();
     expect(snapshot).toEqual({ bytes, etag: '"opaque:123"' });
     expect(fetch).toHaveBeenCalledWith(
       setup.url,
@@ -36,7 +39,9 @@ describe('WebDAV transport', () => {
         redirect: 'error',
         credentials: 'omit',
         cache: 'no-store',
-        headers: { Authorization: `Basic ${btoa('user:app-password')}` },
+        headers: {
+          Authorization: `Basic ${Buffer.from(`${credentials.username}:${credentials.password}`).toString('base64')}`,
+        },
       }),
     );
   });
@@ -61,8 +66,21 @@ describe('WebDAV transport', () => {
     await connection.write(bytes, '"exact"');
     await connection.write(bytes, undefined, true);
     expect(new Headers(fetch.mock.calls[0][1].headers).get('If-Match')).toBe('"exact"');
+    expect(new Uint8Array(fetch.mock.calls[0][1].body)).toEqual(bytes);
     expect(new Headers(fetch.mock.calls[1][1].headers).get('If-None-Match')).toBe('*');
     expect(fetch.mock.calls[1][1].headers).not.toHaveProperty('If-Match');
+  });
+
+  it('preserves percent-encoded file URLs without decoding or double encoding them', async () => {
+    const url = 'https://dav.example/folder%20name/vault%2Fname%25.kdbx';
+    const fetch = vi.fn().mockResolvedValue(response('"etag"'));
+    using _fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(fetch);
+    const connection = createWebDavConnection({ ...setup, url });
+
+    await connection.read();
+    await connection.write(bytes, '"etag"');
+
+    expect(fetch.mock.calls.map((call) => call[0])).toEqual([url, url]);
   });
 
   it('verifies exact bytes and strong ETag when PUT omits its validator', async () => {
@@ -124,7 +142,7 @@ describe('WebDAV transport', () => {
     connection.dispose();
     connection.dispose();
     await expect(request).rejects.toMatchObject({ name: 'AbortError' });
-    expect(() => connection.read()).toThrow();
+    await expect(connection.read()).rejects.toMatchObject({ name: 'AbortError' });
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 });

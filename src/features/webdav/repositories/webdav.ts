@@ -1,4 +1,5 @@
 import * as z from 'zod/mini';
+import { createClient, getPatcher, type RequestOptionsCustom, type WebDAVClient } from 'webdav';
 import { equalBytes } from '@/repositories/record';
 
 export const canonicalFileUrl = (input: unknown) => {
@@ -63,13 +64,6 @@ export const webdavConnectionSchema = z.object({
   password: z.string().check(z.minLength(1, 'Enter a WebDAV password or app password.')),
 });
 
-const basicAuthorization = (username: string, password: string) => {
-  const bytes = new TextEncoder().encode(`${username}:${password}`);
-  let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return `Basic ${btoa(binary)}`;
-};
-
 const strongEtag = (value: string | null) => {
   if (!value || /^W\//i.test(value) || !/^"[\x21\x23-\x7e\x80-\xff]*"$/.test(value)) return undefined;
   return value;
@@ -101,57 +95,11 @@ const errorForStatus = (status: number) => {
   return new WebDavError('network', `WebDAV request failed with HTTP ${status}.`);
 };
 
-const request = async ({
-  url,
-  authorization,
-  method,
-  signal,
-  headers,
-  body,
-}: {
-  url: string;
-  authorization: string;
-  method: 'GET' | 'PUT';
-  signal?: AbortSignal;
-  headers?: HeadersInit;
-  body?: Uint8Array;
-}) => {
-  try {
-    const response = await fetch(url, {
-      method,
-      mode: 'cors',
-      credentials: 'omit',
-      cache: 'no-store',
-      redirect: 'error',
-      signal,
-      headers: { Authorization: authorization, ...Object.fromEntries(new Headers(headers).entries()) },
-      body: body ? body.slice().buffer : undefined,
-    });
-
-    if (!response.ok) throw errorForStatus(response.status);
-    return response;
-  } catch (error) {
-    if (error instanceof WebDavError || (error instanceof DOMException && error.name === 'AbortError')) throw error;
-    throw new WebDavError(
-      'network',
-      'The browser could not access this WebDAV endpoint. Check its HTTPS and browser access settings.',
-      { cause: error },
-    );
-  }
-};
-
-export const readWebDavFile = async (url: string, authorization: string, signal?: AbortSignal) => {
-  const response = await request({ url, authorization, method: 'GET', signal });
-  try {
-    return {
-      bytes: new Uint8Array(await response.arrayBuffer()),
-      etag: strongEtag(response.headers.get('ETag')),
-    };
-  } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') throw error;
-    throw new WebDavError('network', 'The WebDAV response could not be read completely.', { cause: error });
-  }
-};
+getPatcher().patch('fetch', (url, options) => {
+  if (typeof url !== 'string' || !options || typeof options !== 'object')
+    throw new Error('Invalid WebDAV request options.');
+  return fetch(url, { ...options, mode: 'cors', credentials: 'omit', cache: 'no-store', redirect: 'error' });
+});
 
 export type WebDavSetup = z.infer<typeof webdavConnectionSchema>;
 export const validateWebDavSetup = (input: WebDavSetup) => {
@@ -160,49 +108,73 @@ export const validateWebDavSetup = (input: WebDavSetup) => {
 };
 
 export const createWebDavConnection = (input: WebDavSetup) => {
-  const setup = validateWebDavSetup(input);
-  let authorization: string | undefined = basicAuthorization(setup.username, setup.password);
-  const url = setup.url;
+  const { url, username, password } = validateWebDavSetup(input);
+  // webdav encodes Basic credentials as Latin-1; supply UTF-8 bytes for non-ASCII accounts.
+  const [encodedUsername, encodedPassword] = [username, password].map((value) =>
+    Array.from(new TextEncoder().encode(value), (byte) => String.fromCharCode(byte)).join(''),
+  );
+  let client: WebDAVClient | undefined = createClient(url, { username: encodedUsername, password: encodedPassword });
   const controller = new AbortController();
-  const getAuthorization = () => {
-    controller.signal.throwIfAborted();
-    if (authorization === undefined) throw new DOMException('WebDAV connection locked.', 'AbortError');
-    return authorization;
+  const request = async (options: RequestOptionsCustom) => {
+    try {
+      controller.signal.throwIfAborted();
+      if (!client) throw new DOMException('WebDAV connection locked.', 'AbortError');
+      const response = await client.customRequest('', {
+        ...options,
+        url,
+        signal: AbortSignal.any([options.signal ?? controller.signal, controller.signal]),
+      });
+      if (!response.ok) throw errorForStatus(response.status);
+      return response;
+    } catch (error) {
+      if (error instanceof WebDavError || (error instanceof DOMException && error.name === 'AbortError')) throw error;
+      if (error instanceof Error && 'status' in error && typeof error.status === 'number')
+        throw errorForStatus(error.status);
+      throw new WebDavError(
+        'network',
+        'The browser could not access this WebDAV endpoint. Check its HTTPS and browser access settings.',
+        { cause: error },
+      );
+    }
+  };
+  const read = async (signal: AbortSignal = controller.signal) => {
+    const response = await request({ method: 'GET', signal });
+    try {
+      return {
+        bytes: new Uint8Array(await response.arrayBuffer()),
+        etag: strongEtag(response.headers.get('ETag')),
+      };
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') throw error;
+      throw new WebDavError('network', 'The WebDAV response could not be read completely.', { cause: error });
+    }
   };
   return {
     signal: controller.signal,
     dispose: () => {
-      authorization = undefined;
+      client = undefined;
       controller.abort();
     },
-    read: (signal: AbortSignal = controller.signal) => {
-      controller.signal.throwIfAborted();
-      return readWebDavFile(url, getAuthorization(), AbortSignal.any([signal, controller.signal]));
-    },
+    read,
     write: async (
       bytes: Uint8Array,
       etag: string | undefined,
       create = false,
       signal: AbortSignal = controller.signal,
     ) => {
+      const validator = create ? '*' : strongEtag(etag ?? null);
       controller.signal.throwIfAborted();
-      signal = AbortSignal.any([signal, controller.signal]);
-      if (!create && !strongEtag(etag ?? null)) {
+      if (!validator) {
         throw new WebDavError('unsupported', 'This WebDAV server did not provide a strong ETag. Updates are disabled.');
       }
       const response = await request({
-        url: setup.url,
-        authorization: getAuthorization(),
         method: 'PUT',
         signal,
-        body: bytes,
-        headers: {
-          'Content-Type': 'application/octet-stream',
-          ...(create ? { 'If-None-Match': '*' } : { 'If-Match': etag! }),
-        },
+        data: bytes.slice().buffer,
+        headers: { 'Content-Type': 'application/octet-stream', [create ? 'If-None-Match' : 'If-Match']: validator },
       });
       if (!strongEtag(response.headers.get('ETag'))) {
-        const snapshot = await readWebDavFile(url, getAuthorization(), signal);
+        const snapshot = await read(signal);
         if (!snapshot.etag || !equalBytes(snapshot.bytes, bytes)) {
           throw new WebDavError(
             'unconfirmed',
@@ -211,6 +183,7 @@ export const createWebDavConnection = (input: WebDavSetup) => {
         }
       }
       signal.throwIfAborted();
+      controller.signal.throwIfAborted();
     },
   };
 };
