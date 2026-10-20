@@ -303,6 +303,54 @@ export const prepareWebDavSync = async ({
       if (!record.synchronization.pending || equalBytes(record.kdbx.encryptedBytes, snapshot.bytes)) {
         return { record, database: remote, bytes: snapshot.bytes };
       }
+      // KDBX drops milliseconds, so concurrent edits can share a timestamp. kdbxweb's merge
+      // discards the remote version on a tie unless it is already preserved in local history.
+      const kdbx = (await import('@/utils/kdbxweb')).default;
+      const entryContent = (version: kdbx.KdbxEntry) =>
+        JSON.stringify(
+          {
+            fields: new Map(
+              [...version.fields].map(([name, value]) => [name, typeof value === 'string' ? value : value.getText()]),
+            ),
+            binaries: new Map(
+              [...version.binaries].map(([name, value]) => [name, 'hash' in value ? value.hash : value]),
+            ),
+            tags: version.tags.toSorted(),
+            icon: version.icon,
+            customIcon: version.customIcon,
+            fgColor: version.fgColor,
+            bgColor: version.bgColor,
+            overrideUrl: version.overrideUrl,
+            autoType: version.autoType,
+            customData: version.customData,
+            qualityCheck: version.qualityCheck,
+            expires: !!version.times.expires,
+            expiryTime: version.times.expires ? version.times.expiryTime : undefined,
+          },
+          (_key, value: unknown) => {
+            if (value instanceof kdbx.ProtectedValue) return value.toBase64();
+            if (value instanceof kdbx.KdbxUuid) return value.id;
+            if (value instanceof Map)
+              return [...value.entries()].sort(([left], [right]) => String(left).localeCompare(String(right)));
+            if (value instanceof ArrayBuffer || value instanceof Uint8Array) return kdbx.ByteUtils.bytesToBase64(value);
+            return value;
+          },
+        );
+      const remoteEntries = new Map([...remote.getDefaultGroup().allEntries()].map((entry) => [entry.uuid.id, entry]));
+      for (const entry of candidate.getDefaultGroup().allEntries()) {
+        const remoteEntry = remoteEntries.get(entry.uuid.id);
+        if (!remoteEntry || entry.lastModTime !== remoteEntry.lastModTime) continue;
+        const remoteContent = entryContent(remoteEntry);
+        if (
+          entryContent(entry) !== remoteContent &&
+          !entry.history.some((version) => entryContent(version) === remoteContent)
+        ) {
+          throw new WebDavError(
+            'entry-conflict',
+            'Conflicting entry changes have the same timestamp. Download your local database and resolve the conflict before retrying.',
+          );
+        }
+      }
       if (record.synchronization.localEditState)
         candidate.setLocalEditState(structuredClone(record.synchronization.localEditState));
       candidate.merge(remote);
