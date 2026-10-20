@@ -306,6 +306,19 @@ describe('webdav', () => {
   });
 
   describe('WebDAV synchronization', () => {
+    it('decrypts each snapshot once when merging pending changes', async () => {
+      using context = await imported();
+      const { record, db } = context;
+      db.createEntry(db.getDefaultGroup()).fields.set('Title', 'Local entry');
+      const saved = await saveWebDav(record, db);
+      using load = vi.spyOn(kdbx.Kdbx, 'load');
+
+      const candidate = await prepare(saved, db);
+
+      expect(candidate.database.getDefaultGroup().entries[0].fields.get('Title')).toBe('Local entry');
+      expect(load).toHaveBeenCalledTimes(2);
+    });
+
     it('pulls clean changes without uploading and commits the matching model and row', async () => {
       using context = await imported();
       const { record, db, fetch } = context;
