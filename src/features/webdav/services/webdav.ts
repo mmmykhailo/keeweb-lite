@@ -303,8 +303,8 @@ export const prepareWebDavSync = async ({
       if (!record.synchronization.pending || equalBytes(record.kdbx.encryptedBytes, snapshot.bytes)) {
         return { record, database: remote, bytes: snapshot.bytes };
       }
-      // KDBX drops milliseconds, so concurrent edits can share a timestamp. kdbxweb's merge
-      // discards the remote version on a tie unless it is already preserved in local history.
+      // KDBX drops milliseconds. kdbxweb identifies current and historical versions by
+      // timestamp, so a collision can discard remote content unless it is preserved locally.
       const kdbx = (await import('@/utils/kdbxweb')).default;
       const entryContent = (version: kdbx.KdbxEntry) =>
         JSON.stringify(
@@ -339,16 +339,22 @@ export const prepareWebDavSync = async ({
       const remoteEntries = new Map([...remote.getDefaultGroup().allEntries()].map((entry) => [entry.uuid.id, entry]));
       for (const entry of candidate.getDefaultGroup().allEntries()) {
         const remoteEntry = remoteEntries.get(entry.uuid.id);
-        if (!remoteEntry || entry.lastModTime !== remoteEntry.lastModTime) continue;
-        const remoteContent = entryContent(remoteEntry);
-        if (
-          entryContent(entry) !== remoteContent &&
-          !entry.history.some((version) => entryContent(version) === remoteContent)
-        ) {
-          throw new WebDavError(
-            'entry-conflict',
-            'Conflicting entry changes have the same timestamp. Download your local database and resolve the conflict before retrying.',
-          );
+        if (!remoteEntry) continue;
+        const localVersions = [entry, ...entry.history].map((version) => ({
+          time: version.lastModTime,
+          content: entryContent(version),
+        }));
+        for (const version of [remoteEntry, ...remoteEntry.history]) {
+          const remoteContent = entryContent(version);
+          if (
+            localVersions.some((local) => local.time === version.lastModTime && local.content !== remoteContent) &&
+            !localVersions.some((local) => local.content === remoteContent)
+          ) {
+            throw new WebDavError(
+              'entry-conflict',
+              'Conflicting entry changes have the same timestamp. Download your local database and resolve the conflict before retrying.',
+            );
+          }
         }
       }
       if (record.synchronization.localEditState)
