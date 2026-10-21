@@ -18,12 +18,7 @@ import { importWebDavRecord } from '@/features/webdav/services/webdav';
 import { getErrorMessage } from '@/utils/error';
 import { webdavConnectionSchema } from '@/features/webdav/repositories/webdav';
 import { useSetupOperation } from '@/features/webdav/hooks/use-setup-operation';
-
-export type ImportWebDavDialogProps = {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  onSuccess: () => void;
-};
+import type { DialogProps } from '@/services/provider';
 
 const schema = z.object({
   ...webdavConnectionSchema.shape,
@@ -33,7 +28,7 @@ const schema = z.object({
 
 type FormValues = z.infer<typeof schema>;
 
-export const ImportWebDavDialog = ({ open, onOpenChange, onSuccess }: ImportWebDavDialogProps) => {
+export const ImportWebDavDialog = ({ open, onOpenChange, onSuccess }: DialogProps) => {
   const { abort, begin, finish } = useSetupOperation(open);
   const {
     control,
