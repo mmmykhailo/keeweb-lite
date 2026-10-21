@@ -484,6 +484,48 @@ describe('webdav', () => {
       },
     );
 
+    it.each(['remote current', 'local current', 'both histories'])(
+      'refuses timestamp conflicts involving %s without uploading or changing the pending cache',
+      async (kind) => {
+        const db = await database();
+        const entry = db.createEntry(db.getDefaultGroup());
+        entry.fields.set('Title', 'Original');
+        entry.times.lastModTime = new Date('2026-01-01T00:00:00Z');
+        using context = await imported(db);
+        const { record, bytes, fetch } = context;
+        const local = await unlockDatabase({ encryptedBytes: bytes, password });
+        const remote = await unlockDatabase({ encryptedBytes: bytes, password });
+        const localEntry = local.getDefaultGroup().entries[0];
+        const remoteEntry = remote.getDefaultGroup().entries[0];
+        localEntry.pushHistory();
+        localEntry.fields.set('Title', 'Local intermediate');
+        localEntry.times.lastModTime = new Date('2026-01-01T00:00:02Z');
+        if (kind !== 'local current') {
+          localEntry.pushHistory();
+          localEntry.fields.set('Title', 'Local final');
+          localEntry.times.lastModTime = new Date('2026-01-01T00:00:04Z');
+        }
+        remoteEntry.pushHistory();
+        remoteEntry.fields.set('Title', 'Remote intermediate');
+        remoteEntry.times.lastModTime = new Date('2026-01-01T00:00:02Z');
+        if (kind !== 'remote current') {
+          remoteEntry.pushHistory();
+          remoteEntry.fields.set('Title', 'Remote final');
+          remoteEntry.times.lastModTime = new Date('2026-01-01T00:00:06Z');
+        }
+        const saved = await saveWebDav(record, local);
+        const remoteBytes = await toEncryptedBytes(remote);
+        fetch.mockClear();
+        fetch.mockImplementation(() => Promise.resolve(response(remoteBytes)));
+
+        await expect(prepare(saved, local)).rejects.toThrow('Conflicting entry changes have the same timestamp');
+
+        expect(await getRecord(record.id)).toEqual(saved);
+        expect(saved.synchronization.pending).toBe(true);
+        expect(fetch.mock.calls.map((call) => call[1].method)).toEqual(['GET']);
+      },
+    );
+
     it('allows same-second edits when the remote version is already in local history', async () => {
       const db = await database();
       const entry = db.createEntry(db.getDefaultGroup());
