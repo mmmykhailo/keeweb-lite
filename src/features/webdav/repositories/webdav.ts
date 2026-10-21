@@ -1,5 +1,4 @@
 import * as z from 'zod/mini';
-import { createClient, getPatcher, type RequestOptionsCustom, type WebDAVClient } from 'webdav';
 import { equalBytes } from '@/repositories/record';
 
 export const canonicalFileUrl = (input: unknown) => {
@@ -95,12 +94,6 @@ const errorForStatus = (status: number) => {
   return new WebDavError('network', `WebDAV request failed with HTTP ${status}.`);
 };
 
-getPatcher().patch('fetch', (url, options) => {
-  if (typeof url !== 'string' || !options || typeof options !== 'object')
-    throw new Error('Invalid WebDAV request options.');
-  return fetch(url, { ...options, mode: 'cors', credentials: 'omit', cache: 'no-store', redirect: 'error' });
-});
-
 export type WebDavSetup = z.infer<typeof webdavConnectionSchema>;
 export const validateWebDavSetup = (input: WebDavSetup) => {
   const setup = webdavConnectionSchema.parse(input);
@@ -109,27 +102,27 @@ export const validateWebDavSetup = (input: WebDavSetup) => {
 
 export const createWebDavConnection = (input: WebDavSetup) => {
   const { url, username, password } = validateWebDavSetup(input);
-  // webdav encodes Basic credentials as Latin-1; supply UTF-8 bytes for non-ASCII accounts.
-  const [encodedUsername, encodedPassword] = [username, password].map((value) =>
-    Array.from(new TextEncoder().encode(value), (byte) => String.fromCharCode(byte)).join(''),
-  );
-  let client: WebDAVClient | undefined = createClient(url, { username: encodedUsername, password: encodedPassword });
+  let authorization: string | undefined = `Basic ${btoa(
+    Array.from(new TextEncoder().encode(`${username}:${password}`), (byte) => String.fromCharCode(byte)).join(''),
+  )}`;
   const controller = new AbortController();
-  const request = async (options: RequestOptionsCustom) => {
+  const request = async (options: RequestInit) => {
     try {
       controller.signal.throwIfAborted();
-      if (!client) throw new DOMException('WebDAV connection locked.', 'AbortError');
-      const response = await client.customRequest('', {
+      if (!authorization) throw new DOMException('WebDAV connection locked.', 'AbortError');
+      const response = await fetch(url, {
         ...options,
-        url,
+        mode: 'cors',
+        credentials: 'omit',
+        cache: 'no-store',
+        redirect: 'error',
+        headers: { Authorization: authorization, ...Object.fromEntries(new Headers(options.headers)) },
         signal: AbortSignal.any([options.signal ?? controller.signal, controller.signal]),
       });
       if (!response.ok) throw errorForStatus(response.status);
       return response;
     } catch (error) {
       if (error instanceof WebDavError || (error instanceof DOMException && error.name === 'AbortError')) throw error;
-      if (error instanceof Error && 'status' in error && typeof error.status === 'number')
-        throw errorForStatus(error.status);
       throw new WebDavError(
         'network',
         'The browser could not access this WebDAV endpoint. Check its HTTPS and browser access settings.',
@@ -152,7 +145,7 @@ export const createWebDavConnection = (input: WebDavSetup) => {
   return {
     signal: controller.signal,
     dispose: () => {
-      client = undefined;
+      authorization = undefined;
       controller.abort();
     },
     read,
@@ -170,7 +163,7 @@ export const createWebDavConnection = (input: WebDavSetup) => {
       const response = await request({
         method: 'PUT',
         signal,
-        data: bytes.slice().buffer,
+        body: bytes.slice().buffer,
         headers: { 'Content-Type': 'application/octet-stream', [create ? 'If-None-Match' : 'If-Match']: validator },
       });
       if (!strongEtag(response.headers.get('ETag'))) {
