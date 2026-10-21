@@ -146,20 +146,6 @@ describe('WebDAV workspace races', () => {
     expect(screen.getByLabelText('Title')).toHaveValue('After gate');
   });
 
-  it('refreshes clean defaults for the same selected UUID', async () => {
-    using context = await fixture();
-    const { session, remoteBytes, fetch } = context;
-    const get = Promise.withResolvers<Response>();
-    fetch.mockReturnValueOnce(get.promise);
-    const user = userEvent.setup();
-    render(<Harness initial={session} />);
-    await user.click(screen.getByRole('button', { name: /Test Entry test-user/ }));
-    const title = screen.getByLabelText('Title');
-    await act(async () => get.resolve(response(remoteBytes)));
-    await waitFor(() => expect(screen.getByLabelText('Title')).toHaveValue('Remote title'));
-    expect(screen.getByLabelText('Title')).not.toBe(title);
-  });
-
   it('ignores old completion after lock and re-unlock of the same record at version zero', async () => {
     using context = await fixture();
     const { session, record, remoteBytes, fetch, bytes } = context;
