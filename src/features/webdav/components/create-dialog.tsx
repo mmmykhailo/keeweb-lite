@@ -103,7 +103,7 @@ export const CreateWebDavDialog = ({ open, onOpenChange, onSuccess }: DialogProp
     { name: 'username', label: 'WebDAV username', type: 'text', autoComplete: 'username' },
     {
       name: 'serverPassword',
-      label: 'WebDAV password or app password',
+      label: 'WebDAV password',
       type: 'password',
       autoComplete: 'new-password',
     },
