@@ -1,4 +1,6 @@
 import kdbx from '@/utils/kdbxweb';
+import { unlockSession } from '@/features/unlock/services/session';
+import { syncSession } from '@/features/workspace/services/session';
 import { createFileList } from '@tests/utils/file-list';
 import { get, set } from 'idb-keyval';
 import { describe, expect, it, vi } from 'vitest';
@@ -20,7 +22,6 @@ import {
   importWebDavRecord,
   prepareWebDavSync,
   saveWebDav,
-  unlockWebDav,
 } from '@/features/webdav/services/webdav';
 import { cloneDatabase } from '@/services/database';
 import { toEncryptedBytes, unlockDatabase } from '@/services/database';
@@ -162,9 +163,9 @@ describe('webdav', () => {
         }
         expect(container.getDefaultGroup().entries[0].fields.get('Password')).toBeInstanceOf(kdbx.ProtectedValue);
         expect(db.getDefaultGroup().entries).toHaveLength(0);
-        const session = await unlockWebDav(record.id, password);
-        expect(session.webDavError).toBeUndefined();
-        session.webDav?.dispose();
+        const session = await unlockSession({ record, password });
+        expect(session.connection?.signal.aborted).toBe(false);
+        session.connection?.dispose();
       },
     );
 
@@ -173,12 +174,11 @@ describe('webdav', () => {
       const { record, fetch } = context;
       await set(`keeweb-lite.credentials.${record.id}`, new Uint8Array([0]));
       fetch.mockClear();
-      const session = await unlockWebDav(record.id, password);
+      const session = await unlockSession({ record, password });
       expect(session.database.meta.name).toBe('Vault');
-      expect(session.webDavError).toBeInstanceOf(Error);
-      expect(session.webDav).toBeDefined();
+      await expect(syncSession(session)).rejects.toThrow();
       expect(fetch).not.toHaveBeenCalled();
-      session.webDav?.dispose();
+      session.connection?.dispose();
       expect((await saveWebDav(record, session.database)).synchronization.pending).toBe(true);
     });
 
@@ -199,7 +199,7 @@ describe('webdav', () => {
         }
         return db;
       });
-      await expect(unlockWebDav(record.id, password)).rejects.toThrow('changed or was removed');
+      await expect(unlockSession({ record, password })).rejects.toThrow('changed or was removed');
       const current = await getRecord(record.id);
       expect(current.lastOpenedAt).toBeUndefined();
     });
@@ -339,7 +339,7 @@ describe('webdav', () => {
       edited.times.lastModTime = new Date(Date.now() + 3000);
       const state = structuredClone(local.getLocalEditState());
       const saved = await saveWebDav(record, local);
-      const reopened = await unlockWebDav(record.id, password);
+      const reopened = await unlockSession({ record, password });
       expect(reopened.database.getLocalEditState()).toEqual(state);
       const remote = await unlockDatabase({ encryptedBytes: bytes, password });
       remote.createEntry(remote.getDefaultGroup()).fields.set('Title', 'Remote entry');
@@ -359,7 +359,7 @@ describe('webdav', () => {
       expect(current.synchronization).not.toHaveProperty('localEditState');
       expect(current.synchronization.pending).toBe(false);
       expect(candidate.database.getLocalEditState().entries).toEqual({});
-      reopened.webDav?.dispose();
+      reopened.connection?.dispose();
     });
 
     it('stops after three stale-write attempts and keeps local pending data', async () => {

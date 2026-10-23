@@ -12,7 +12,7 @@ type EntryDetailsProps = {
   selectedEntry: kdbxweb.KdbxEntry | null;
   database: kdbxweb.Kdbx;
   record: FileRecord;
-  webDavSignal?: AbortSignal;
+  signal?: AbortSignal;
   onEntrySave: (result: EntryMutationResult) => void;
   showBackButton: boolean;
   onBack: () => void;
@@ -42,7 +42,7 @@ export const EntryDetails = ({
   selectedEntry,
   database,
   record,
-  webDavSignal,
+  signal,
   onEntrySave,
   showBackButton,
   onBack,
@@ -68,15 +68,11 @@ export const EntryDetails = ({
         <p className="truncate text-xs font-medium text-foreground">Entry</p>
       </div>
       <EntryEditForm
-        key={
-          record.type === 'webdav'
-            ? `${selectedEntry.uuid.toString()}:${record.synchronization.generation}`
-            : selectedEntry.uuid.toString()
-        }
+        key={selectedEntry.uuid.toString()}
         database={database}
         entry={selectedEntry}
         record={record}
-        webDavSignal={webDavSignal}
+        signal={signal}
         onEntrySave={onEntrySave}
       />
     </aside>

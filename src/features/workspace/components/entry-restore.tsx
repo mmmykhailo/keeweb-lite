@@ -23,11 +23,11 @@ type EntryRestoreProps = {
   database: kdbxweb.Kdbx;
   entry: kdbxweb.KdbxEntry;
   record: FileRecord;
-  webDavSignal?: AbortSignal;
+  signal?: AbortSignal;
   onEntryRestore: (result: EntryMutationResult) => void;
 };
 
-export const EntryRestore = ({ database, entry, record, onEntryRestore, webDavSignal }: EntryRestoreProps) => {
+export const EntryRestore = ({ database, entry, record, onEntryRestore, signal }: EntryRestoreProps) => {
   const { guardNavigation } = useSafeNet();
   const { isMutating, setMutating } = useEntryMutation();
   const [isOpen, setIsOpen] = useState(false);
@@ -37,13 +37,13 @@ export const EntryRestore = ({ database, entry, record, onEntryRestore, webDavSi
     try {
       const entryUuid = entry.uuid.toString();
 
-      const result = await restoreEntry({ database, record, entryUuid, signal: webDavSignal });
-      webDavSignal?.throwIfAborted();
+      const result = await restoreEntry({ database, record, entryUuid, signal });
+      signal?.throwIfAborted();
       onEntryRestore(result);
 
       toast.success('Entry restored.');
     } catch (error) {
-      if (!webDavSignal?.aborted) toast.error(getErrorMessage({ error, fallback: 'Entry restore failed.' }));
+      if (!signal?.aborted) toast.error(getErrorMessage({ error, fallback: 'Entry restore failed.' }));
     } finally {
       setMutating(false);
     }

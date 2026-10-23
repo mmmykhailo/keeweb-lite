@@ -20,6 +20,7 @@ import {
 import { createEmptyDatabase, toEncryptedBytes, unlockDatabase, loadDatabase } from '@/services/database';
 import { validateNewDatabaseInput, toKey } from '@/services/record';
 import { Lock } from '@/utils/lock';
+import type { SyncOptions } from '@/services/provider';
 
 const encryptConnection = async (setup: WebDavSetup, database: kdbx.Kdbx) => {
   const kdbx = (await import('@/utils/kdbxweb')).default;
@@ -191,62 +192,6 @@ export const createWebDavRecord = async ({
   }
 };
 
-export const unlockWebDav = async (id: string, password: string) => {
-  const kdbx = (await import('@/utils/kdbxweb')).default;
-  const record = await getRecord(id);
-  if (record.type !== 'webdav') throw new Error('WebDAV database not found.');
-  const database = await unlockDatabase({
-    encryptedBytes: record.kdbx.encryptedBytes,
-    password,
-    keyFileHashBase64: record.key?.hash,
-  });
-  if (record.synchronization.localEditState)
-    database.setLocalEditState(structuredClone(record.synchronization.localEditState));
-  let connection: WebDavConnection | undefined;
-  let connectionError: Error | undefined;
-  try {
-    const bytes = await getWebDavCredentials(id);
-    if (!bytes) throw new Error('Saved WebDAV credentials are missing. Download and reimport to reconnect.');
-    const container = await unlockDatabase({ encryptedBytes: bytes, password, keyFileHashBase64: record.key?.hash });
-    const entry = container.getDefaultGroup().entries[0];
-    const username = entry?.fields.get('Username');
-    const serverPassword = entry?.fields.get('Password');
-    if (!(username instanceof kdbx.ProtectedValue) || !(serverPassword instanceof kdbx.ProtectedValue)) {
-      throw new Error('Saved WebDAV credentials are invalid. Download and reimport to reconnect.');
-    }
-    connection = createWebDavConnection({
-      url: record.source.url,
-      username: username.getText(),
-      password: serverPassword.getText(),
-    });
-  } catch (error) {
-    connectionError = error instanceof Error ? error : new Error('Unable to unlock WebDAV credentials.');
-    const controller = new AbortController();
-    connection = {
-      signal: controller.signal,
-      dispose: () => controller.abort(),
-      read: async () => {
-        throw connectionError;
-      },
-      write: async () => {
-        throw connectionError;
-      },
-    };
-  }
-  try {
-    const result = await updateWebDavRecord({
-      id,
-      generation: record.synchronization.generation,
-      change: { kind: 'touch' },
-    });
-    if (result.status !== 'applied') throw new Error('The saved database changed or was removed. Unlock it again.');
-    return { database, record: result.record, webDav: connection, webDavError: connectionError, version: 0 };
-  } catch (error) {
-    connection?.dispose();
-    throw error;
-  }
-};
-
 export const saveWebDav = async (record: WebDavFileRecord, database: kdbx.Kdbx, signal?: AbortSignal) => {
   signal?.throwIfAborted();
   const localEditState = structuredClone(database.getLocalEditState());
@@ -387,17 +332,15 @@ export const acceptWebDavSync = async (prepared: PreparedWebDavSync, signal: Abo
   return result;
 };
 
-export const updateWebDavDatabase = async <Result>({
+export const loadWebDavDatabase = async ({
   database,
   record,
-  update,
   signal,
 }: {
   database: kdbx.Kdbx;
   record: WebDavFileRecord;
-  update: (database: kdbx.Kdbx) => Result | Promise<Result>;
   signal?: AbortSignal;
-}): Promise<[kdbx.Kdbx, WebDavFileRecord, Result]> => {
+}) => {
   signal?.throwIfAborted();
   const current = await getRecord(record.id);
   if (current.type !== 'webdav' || current.synchronization.generation !== record.synchronization.generation) {
@@ -409,6 +352,86 @@ export const updateWebDavDatabase = async <Result>({
   });
   if (current.synchronization.localEditState)
     nextDatabase.setLocalEditState(structuredClone(current.synchronization.localEditState));
-  const result = await update(nextDatabase);
-  return [nextDatabase, await saveWebDav(current, nextDatabase, signal), result];
+  return nextDatabase;
+};
+
+export const unlockWebDav = async (id: string, password: string) => {
+  const kdbx = (await import('@/utils/kdbxweb')).default;
+  const record = await getRecord(id);
+  if (record.type !== 'webdav') throw new Error('WebDAV database not found.');
+  const database = await unlockDatabase({
+    encryptedBytes: record.kdbx.encryptedBytes,
+    password,
+    keyFileHashBase64: record.key?.hash,
+  });
+  if (record.synchronization.localEditState)
+    database.setLocalEditState(structuredClone(record.synchronization.localEditState));
+  let connection: WebDavConnection | undefined;
+  try {
+    const bytes = await getWebDavCredentials(id);
+    if (!bytes) throw new Error('Saved WebDAV credentials are missing. Download and reimport to reconnect.');
+    const container = await unlockDatabase({ encryptedBytes: bytes, password, keyFileHashBase64: record.key?.hash });
+    const entry = container.getDefaultGroup().entries[0];
+    const username = entry?.fields.get('Username');
+    const serverPassword = entry?.fields.get('Password');
+    if (!(username instanceof kdbx.ProtectedValue) || !(serverPassword instanceof kdbx.ProtectedValue)) {
+      throw new Error('Saved WebDAV credentials are invalid. Download and reimport to reconnect.');
+    }
+    connection = createWebDavConnection({
+      url: record.source.url,
+      username: username.getText(),
+      password: serverPassword.getText(),
+    });
+  } catch (error) {
+    const connectionError = error instanceof Error ? error : new Error('Unable to unlock WebDAV credentials.');
+    const controller = new AbortController();
+    connection = {
+      signal: controller.signal,
+      dispose: () => controller.abort(),
+      read: async () => {
+        throw connectionError;
+      },
+      write: async () => {
+        throw connectionError;
+      },
+    };
+  }
+  const activeConnection = connection;
+  try {
+    const result = await updateWebDavRecord({
+      id,
+      generation: record.synchronization.generation,
+      change: { kind: 'touch' },
+    });
+    if (result.status !== 'applied') throw new Error('The saved database changed or was removed. Unlock it again.');
+    return {
+      database,
+      record: result.record,
+      version: 0,
+      connection: {
+        signal: activeConnection.signal,
+        dispose: activeConnection.dispose,
+        sync: async ({ signal = activeConnection.signal, canApply = () => true, onApply }: SyncOptions) => {
+          const prepared = await prepareWebDavSync({
+            id,
+            connection: activeConnection,
+            credentials: database.credentials,
+            signal,
+            canApply,
+          });
+          signal.throwIfAborted();
+          if (!canApply()) throw new DOMException('Sync deferred.', 'AbortError');
+          onApply?.();
+          const accepted = await acceptWebDavSync(prepared, signal, canApply);
+          if (accepted.status === 'missing')
+            throw new Error('The database was removed. Download your database before closing.');
+          if (accepted.status === 'superseded') throw new DOMException('Sync deferred.', 'AbortError');
+          return { database: prepared.database, record: accepted.record };
+        },
+      },
+    };
+  } catch (error) {
+    connection?.dispose();
+    throw error;
+  }
 };
