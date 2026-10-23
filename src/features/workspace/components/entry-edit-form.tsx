@@ -59,13 +59,12 @@ type EntryEditFormProps = {
   database: kdbxweb.Kdbx;
   entry: kdbxweb.KdbxEntry;
   record: FileRecord;
-  webDavSignal?: AbortSignal;
+  signal?: AbortSignal;
   onEntrySave: (result: EntryMutationResult) => void;
 };
 
-export const EntryEditForm = ({ database, entry, record, onEntrySave, webDavSignal }: EntryEditFormProps) => {
+export const EntryEditForm = ({ database, entry, record, onEntrySave, signal }: EntryEditFormProps) => {
   const { setDirty, registerDiscard } = useSafeNet();
-  const lastModTime = entry.times.lastModTime?.getTime();
   const { isMutating, setMutating } = useEntryMutation();
   const {
     control,
@@ -79,22 +78,15 @@ export const EntryEditForm = ({ database, entry, record, onEntrySave, webDavSign
     resolver: zodResolver(entryEditSchema),
   });
 
-  const [showPassword, setShowPassword] = useState(false);
-
+  const lastModTime = entry.times.lastModTime?.getTime();
   const handleEntryValuesChange = useEffectEvent(() => {
-    // a sync can bring new entry data: show it, but keep what the user is typing
     reset(getEntryValues(entry), { keepDirtyValues: true });
   });
+  useEffect(() => { handleEntryValuesChange(); }, [lastModTime]);
 
-  useEffect(() => {
-    handleEntryValuesChange();
-  }, [lastModTime]);
+  const [showPassword, setShowPassword] = useState(false);
 
-  useEffect(() => {
-    if (record.type !== 'webdav') setDirty(isDirty);
-  }, [isDirty, setDirty, record.type]);
   useLayoutEffect(() => {
-    if (record.type !== 'webdav') return;
     setDirty(isDirty);
     return subscribe({
       formState: { isDirty: true },
@@ -102,7 +94,9 @@ export const EntryEditForm = ({ database, entry, record, onEntrySave, webDavSign
         if (isDirty !== undefined) setDirty(isDirty);
       },
     });
-  }, [isDirty, setDirty, record.type, subscribe]);
+  }, [isDirty, setDirty, subscribe]);
+
+  useLayoutEffect(() => reset(getEntryValues(entry)), [entry, reset]);
 
   useEffect(() => {
     return () => setDirty(false);
@@ -118,14 +112,14 @@ export const EntryEditForm = ({ database, entry, record, onEntrySave, webDavSign
     setMutating(true);
     try {
       const entryUuid = entry.uuid.toString();
-      const result = await saveEntry({ database, record, entryUuid, values, signal: webDavSignal });
+      const result = await saveEntry({ database, record, entryUuid, values, signal });
 
-      webDavSignal?.throwIfAborted();
+      signal?.throwIfAborted();
       reset(values); // Reset the form state after the successful saving (isDirty, touched state, etc)
       onEntrySave?.(result);
       toast.success('Entry saved.');
     } catch (error) {
-      if (!webDavSignal?.aborted) toast.error(getErrorMessage({ error, fallback: 'Entry save failed.' }));
+      if (!signal?.aborted) toast.error(getErrorMessage({ error, fallback: 'Entry save failed.' }));
     } finally {
       setMutating(false);
     }
@@ -447,19 +441,13 @@ export const EntryEditForm = ({ database, entry, record, onEntrySave, webDavSign
 
         <div className="flex items-center justify-between pt-2">
           <div className="flex items-center gap-2">
-            <EntryRemove
-              database={database}
-              entry={entry}
-              record={record}
-              webDavSignal={webDavSignal}
-              onEntryRemove={handleSave}
-            />
+            <EntryRemove database={database} entry={entry} record={record} signal={signal} onEntryRemove={handleSave} />
             {isInTrash && (
               <EntryRestore
                 database={database}
                 entry={entry}
                 record={record}
-                webDavSignal={webDavSignal}
+                signal={signal}
                 onEntryRestore={handleSave}
               />
             )}

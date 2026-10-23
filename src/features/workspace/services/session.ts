@@ -1,16 +1,10 @@
 import type kdbxweb from '@/utils/kdbxweb';
-import {
-  getSyncableRecord,
-  isModified,
-  updateSyncableRecord,
-  type FileRecord,
-  type SyncableRecord,
-} from '@/repositories/record';
-import { updateWebDavDatabase } from '@/features/webdav/services/webdav';
+import { getSyncableRecord, isModified, updateSyncableRecord, type FileRecord, type SyncableRecord } from '@/repositories/record';
 import { loadDatabase, toEncryptedBytes } from '@/services/database';
-import { getProvider } from '@/services/provider-registry';
 import { SyncConflictError } from '@/services/provider';
 import { isSameBytes } from '@/utils/buffer';
+import { getProvider } from '@/services/provider-registry';
+import type { SyncInput } from '@/services/provider';
 import { Lock } from '@/utils/lock';
 
 const updateRecordDatabaseLock = new Lock('record.service.update-record-database');
@@ -27,14 +21,28 @@ export const updateRecordDatabase = async <Result>({
   update: (nextDatabase: kdbxweb.Kdbx) => Result | Promise<Result>;
 }): Promise<[nextDatabase: kdbxweb.Kdbx, nextRecord: FileRecord, result: Result]> => {
   return updateRecordDatabaseLock.runInLock(async () => {
-    if (record.type === 'webdav') return updateWebDavDatabase({ database, record, update, signal });
+    signal?.throwIfAborted();
     const { storage } = getProvider(record);
-    const nextDatabase = await storage.load({ database, record });
+    const nextDatabase = await storage.load({ database, record, signal });
+    signal?.throwIfAborted();
     const result = await update(nextDatabase);
-    const nextRecord = await storage.update(record, { encryptedBytes: await toEncryptedBytes(nextDatabase) });
+    signal?.throwIfAborted();
+    const nextRecord = await storage.save({ database: nextDatabase, record, signal });
 
     return [nextDatabase, nextRecord, result];
   });
+};
+
+const syncSessionLock = new Lock('session.service.sync-session');
+
+export const syncSession = async (input: SyncInput) => {
+  const { sync, label } = getProvider(input.record);
+  if (getProvider(input.record).revisionSync) return syncRevisionSession(input);
+  if (!sync) {
+    throw new Error(`${label} does not support sync.`);
+  }
+
+  return syncSessionLock.runInLock(() => sync(input));
 };
 
 type SyncSessionResult = {
@@ -47,18 +55,18 @@ type Synced = {
   source: SyncableRecord['source'];
 };
 
-const syncSessionLock = new Lock('session.service.sync-session');
+
 
 const MAX_SYNC_ATTEMPTS = 3;
 
-export const syncSession = async ({
+const syncRevisionSession = async ({
   record,
   database,
 }: {
   record: FileRecord;
   database: kdbxweb.Kdbx;
 }): Promise<SyncSessionResult> => {
-  const { sync, label } = getProvider(record);
+  const { revisionSync: sync, label } = getProvider(record);
   if (!sync) {
     throw new Error(`${label} does not support sync.`);
   }
