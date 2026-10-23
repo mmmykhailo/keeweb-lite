@@ -25,9 +25,9 @@ type WorkspacePageProps = {
 };
 
 export const WorkspacePage = ({ session, setSession }: WorkspacePageProps) => {
-  const { database, record, webDav } = session;
-  const [isApplyingWebDavSync, setApplyingWebDavSync] = useState(false);
-  useEffect(() => () => webDav?.dispose(), [webDav]);
+  const { database, record, connection } = session;
+  const [isApplyingSync, setApplyingSync] = useState(false);
+  useEffect(() => () => connection?.dispose(), [connection]);
   const [selectFilter, setSelectFilter] = useState<SelectFilter>(null);
   const [selectedEntryUuid, setSelectedEntryUuid] = useState<kdbxweb.KdbxUuid | null>(null);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -35,7 +35,7 @@ export const WorkspacePage = ({ session, setSession }: WorkspacePageProps) => {
   const { guardNavigation } = useSafeNet();
   const { setMutating } = useEntryMutation();
 
-  const blockWebDavEditing = isApplyingWebDavSync
+  const blockSyncEditing = isApplyingSync
     ? (event: SyntheticEvent) => {
         event.preventDefault();
         event.stopPropagation();
@@ -45,12 +45,12 @@ export const WorkspacePage = ({ session, setSession }: WorkspacePageProps) => {
   const selectedEntry = selectedEntryUuid ? findEntryByUuid(database, selectedEntryUuid) : null;
 
   const handleSelectEntry = (uuid: kdbxweb.KdbxUuid) => {
-    if (isApplyingWebDavSync) return;
+    if (isApplyingSync) return;
     guardNavigation(() => setSelectedEntryUuid(uuid));
   };
 
   const handleSelectFilterChange = (nextSelectFilter: SelectFilter) => {
-    if (isApplyingWebDavSync) return;
+    if (isApplyingSync) return;
     guardNavigation(() => {
       setSelectFilter(nextSelectFilter);
       setSelectedEntryUuid(null);
@@ -63,7 +63,7 @@ export const WorkspacePage = ({ session, setSession }: WorkspacePageProps) => {
   const handleSave = ({ nextDatabase, nextEntryUuid, nextRecord }: EntryMutationResult) => {
     setSession((previousSession) => {
       if (!previousSession) return previousSession;
-      if (record.type === 'webdav' && (webDav?.signal.aborted || previousSession.webDav !== webDav))
+      if (connection?.signal.aborted || previousSession.database.credentials !== database.credentials)
         return previousSession;
 
       return {
@@ -78,7 +78,7 @@ export const WorkspacePage = ({ session, setSession }: WorkspacePageProps) => {
   };
 
   const onWorkspaceLock = () => {
-    webDav?.dispose();
+    connection?.dispose();
     setSession(null);
     setSelectedEntryUuid(null);
     setIsMobileMenuOpen(false);
@@ -92,19 +92,19 @@ export const WorkspacePage = ({ session, setSession }: WorkspacePageProps) => {
   const createNewEntry = async () => {
     setMutating(true);
     try {
-      const result = await createEntry({ database, record, selectFilter, signal: webDav?.signal });
-      webDav?.signal.throwIfAborted();
+      const result = await createEntry({ database, record, selectFilter, signal: connection?.signal });
+      connection?.signal.throwIfAborted();
       handleSave(result);
       toast.success('Entry created.');
     } catch (error) {
-      if (!webDav?.signal.aborted) toast.error(getErrorMessage({ error, fallback: 'Entry creation failed.' }));
+      if (!connection?.signal.aborted) toast.error(getErrorMessage({ error, fallback: 'Entry creation failed.' }));
     } finally {
       setMutating(false);
     }
   };
 
   const handleCreateEntry = () => {
-    if (isApplyingWebDavSync) return;
+    if (isApplyingSync) return;
     guardNavigation(() => void createNewEntry());
   };
 
@@ -118,13 +118,13 @@ export const WorkspacePage = ({ session, setSession }: WorkspacePageProps) => {
         session={session}
         setSession={setSession}
         onWorkspaceLock={handleLock}
-        onWebDavApply={setApplyingWebDavSync}
+        onSyncApply={setApplyingSync}
       />
       <div
-        inert={isApplyingWebDavSync}
-        onClickCapture={blockWebDavEditing}
-        onKeyDownCapture={blockWebDavEditing}
-        onBeforeInputCapture={blockWebDavEditing}
+        inert={isApplyingSync}
+        onClickCapture={blockSyncEditing}
+        onKeyDownCapture={blockSyncEditing}
+        onBeforeInputCapture={blockSyncEditing}
         className="flex min-h-0 flex-1 overflow-hidden"
       >
         {isDesktopMode && (
@@ -153,7 +153,7 @@ export const WorkspacePage = ({ session, setSession }: WorkspacePageProps) => {
             selectedEntry={selectedEntry}
             database={database}
             record={record}
-            webDavSignal={webDav?.signal}
+            signal={connection?.signal}
             onEntrySave={handleSave}
             showBackButton={isMobile}
             onBack={handleBack}
