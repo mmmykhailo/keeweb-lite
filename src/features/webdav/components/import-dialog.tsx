@@ -102,7 +102,7 @@ export const ImportWebDavDialog = ({ open, onOpenChange, onSuccess }: DialogProp
             name="username"
             render={({ field, fieldState }) => (
               <Field data-invalid={fieldState.invalid}>
-                <FieldLabel htmlFor="import-webdav-username">Username</FieldLabel>
+                <FieldLabel htmlFor="import-webdav-username">WebDAV username</FieldLabel>
                 <Input
                   {...field}
                   aria-invalid={fieldState.invalid}
@@ -119,7 +119,7 @@ export const ImportWebDavDialog = ({ open, onOpenChange, onSuccess }: DialogProp
             name="password"
             render={({ field, fieldState }) => (
               <Field data-invalid={fieldState.invalid}>
-                <FieldLabel htmlFor="import-webdav-password">Password or app password</FieldLabel>
+                <FieldLabel htmlFor="import-webdav-password">WebDAV password</FieldLabel>
                 <Input
                   {...field}
                   aria-invalid={fieldState.invalid}

@@ -47,7 +47,7 @@ describe('WebDAV setup', () => {
     await user.type(screen.getByLabelText('Database name'), 'Vault');
     await user.type(screen.getByLabelText('HTTPS destination file URL'), 'https://dav.example/vault.kdbx');
     await user.type(screen.getByLabelText('WebDAV username'), 'user');
-    await user.type(screen.getByLabelText('WebDAV password or app password'), 'server-password');
+    await user.type(screen.getByLabelText('WebDAV password'), 'server-password');
     await user.type(screen.getByLabelText('Database master password'), 'database-password');
     await user.type(screen.getByLabelText('Confirm master password'), 'database-password');
     await user.click(screen.getByRole('button', { name: 'Create' }));
