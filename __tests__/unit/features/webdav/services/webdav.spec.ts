@@ -9,12 +9,10 @@ import {
   createRecord,
   getRecord,
   getRecords,
-  getWebDavCredentials,
-  insertWebDavRecord,
   removeRecord,
-  updateWebDavRecord,
   type WebDavFileRecord,
 } from '@/repositories/record';
+import { getWebDavCredentials, insertWebDavRecord, updateWebDavRecord } from '@/features/webdav/repositories/record';
 import { createWebDavConnection } from '@/features/webdav/repositories/webdav';
 import {
   acceptWebDavSync,
@@ -95,7 +93,7 @@ describe('webdav', () => {
       expect(await getRecords()).toEqual([]);
     });
 
-    it('makes duplicate URL insertion atomic and cancellation rolls both writes back', async () => {
+    it('rejects duplicate URLs and canceled inserts without saving credentials', async () => {
       using context = await imported();
       const { record } = context;
       await removeRecord(record.id);
@@ -107,15 +105,7 @@ describe('webdav', () => {
       expect(await getWebDavCredentials('duplicate')).toBeUndefined();
       await removeRecord(record.id);
       const controller = new AbortController();
-      const put = IDBObjectStore.prototype.put;
-      using _put = vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (
-        this: IDBObjectStore,
-        ...args
-      ) {
-        const request = put.apply(this, args);
-        if (args[1] === RECORDS_STORAGE_KEY) controller.abort();
-        return request;
-      });
+      controller.abort();
       await expect(insertWebDavRecord(record, new Uint8Array([1]), controller.signal)).rejects.toMatchObject({
         name: 'AbortError',
       });
@@ -172,7 +162,7 @@ describe('webdav', () => {
     it('unlocks cached data without network when saved credentials are broken', async () => {
       using context = await imported();
       const { record, fetch } = context;
-      await set(`keeweb-lite.credentials.${record.id}`, new Uint8Array([0]));
+      await set(RECORDS_STORAGE_KEY, [{ ...record, source: { ...record.source, credentials: new Uint8Array([0]) } }]);
       fetch.mockClear();
       const session = await unlockSession({ record, password });
       expect(session.database.meta.name).toBe('Vault');

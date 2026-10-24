@@ -1,5 +1,5 @@
 import * as z from 'zod/mini';
-import { equalBytes } from '@/repositories/record';
+import { equalBytes } from '@/features/webdav/repositories/record';
 
 export const canonicalFileUrl = (input: unknown) => {
   const urlText = z.string().check(z.minLength(1)).parse(input);
