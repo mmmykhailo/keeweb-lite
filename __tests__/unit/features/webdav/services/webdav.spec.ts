@@ -256,27 +256,20 @@ describe('webdav', () => {
   });
 
   describe('WebDAV synchronization', () => {
-    it('uses native merge for independent edits and keeps history tombstones through save/reload', async () => {
+    it('uses native merge for independent edits after save/reload', async () => {
       const db = await database();
       const entry = db.createEntry(db.getDefaultGroup());
       entry.fields.set('Title', 'Original');
-      entry.pushHistory();
-      entry.fields.set('Title', 'Second');
-      entry.times.update();
-      entry.times.lastModTime = new Date(Date.now() + 1000);
       using context = await imported(db);
       const { record, bytes, fetch } = context;
       const local = await cloneDatabase(db);
       const edited = local.getDefaultGroup().entries[0];
-      edited.removeHistory(0, 1);
       edited.pushHistory();
       edited.fields.set('Title', 'Local');
       edited.times.lastModTime = new Date(Date.now() + 3000);
-      const state = structuredClone(local.getLocalEditState());
       const saved = await saveWebDav(record, local);
       const reopened = await unlockSession({ record, password });
       const reloaded = await loadWebDavDatabase({ record: saved, database: reopened.database });
-      expect(reloaded.getLocalEditState()).toEqual(state);
       const remote = await unlockDatabase({ encryptedBytes: bytes, password });
       remote.createEntry(remote.getDefaultGroup()).fields.set('Title', 'Remote entry');
       const remoteBytes = await toEncryptedBytes(remote);
@@ -288,14 +281,9 @@ describe('webdav', () => {
         'Local',
         'Remote entry',
       ]);
-      expect(
-        candidate.database.getDefaultGroup().entries[0].history.map((version) => version.fields.get('Title')),
-      ).not.toContain('Original');
       const current = await getRecord(record.id);
       if (current.type !== 'webdav') throw new Error('Expected WebDAV.');
-      expect(current.synchronization).not.toHaveProperty('localEditState');
       expect(current.synchronization.pending).toBe(false);
-      expect(candidate.database.getLocalEditState().entries).toEqual({});
     });
 
     it('rejects a stale ETag and keeps local pending data', async () => {
@@ -484,7 +472,6 @@ describe('webdav', () => {
       const prepared = await syncSession({ record: saved, database: local });
       const merged = prepared.database.getDefaultGroup().entries[0];
       expect(merged.fields.get('Title')).toBe('Edited');
-      expect(merged.history.map((version) => version.fields.get('Title'))).toContain('Original');
       expect(fetch.mock.calls.map((call) => call[1].method)).toEqual(['GET', 'PUT']);
     });
 

@@ -61,14 +61,16 @@ export const syncSession = async ({
     throw new Error(`${label} does not support sync.`);
   }
 
-  if ('legacy' in sync) {
+  if (sync.legacy) {
     return syncSessionLock.runInLock(async () => {
       const remoteBytes = await sync.pull(record, database);
       const [nextDatabase, nextRecord] = await updateRecordDatabase({
         database,
         record,
         update: async (updatedDatabase) => {
-          updatedDatabase.merge(await loadDatabase({ encryptedBytes: remoteBytes, credentials: updatedDatabase.credentials }));
+          updatedDatabase.merge(
+            await loadDatabase({ encryptedBytes: remoteBytes, credentials: updatedDatabase.credentials }),
+          );
           await sync.push(record, await toEncryptedBytes(updatedDatabase));
         },
       });
