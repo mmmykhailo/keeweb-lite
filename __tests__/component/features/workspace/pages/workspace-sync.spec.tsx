@@ -1,5 +1,5 @@
 import * as webDavService from '@/features/webdav/services/webdav';
-import * as recordRepository from '@/repositories/record';
+import * as recordRepository from '@/features/webdav/repositories/record';
 import userEvent from '@testing-library/user-event';
 import { updateRecordDatabase } from '@/features/workspace/services/session';
 import { useLayoutEffect, useState } from 'react';

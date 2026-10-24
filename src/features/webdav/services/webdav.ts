@@ -1,15 +1,12 @@
 import type kdbx from '@/utils/kdbxweb';
+import { getRecord, getRecords, type PersistedFileRecord, type WebDavFileRecord } from '@/repositories/record';
 import {
   createWebDavRecovery,
-  getRecord,
-  getRecords,
   getWebDavCredentials,
   insertWebDavRecord,
   updateWebDavRecord,
   equalBytes,
-  type PersistedFileRecord,
-  type WebDavFileRecord,
-} from '@/repositories/record';
+} from '@/features/webdav/repositories/record';
 import {
   createWebDavConnection,
   validateWebDavSetup,
