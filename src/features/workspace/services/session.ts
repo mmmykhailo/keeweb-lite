@@ -1,10 +1,15 @@
 import type kdbxweb from '@/utils/kdbxweb';
-import { getSyncableRecord, isModified, updateSyncableRecord, type FileRecord, type SyncableRecord } from '@/repositories/record';
+import {
+  getSyncableRecord,
+  isModified,
+  updateSyncableRecord,
+  type FileRecord,
+  type SyncableRecord,
+} from '@/repositories/record';
 import { loadDatabase, toEncryptedBytes } from '@/services/database';
+import { getProvider } from '@/services/provider-registry';
 import { SyncConflictError } from '@/services/provider';
 import { isSameBytes } from '@/utils/buffer';
-import { getProvider } from '@/services/provider-registry';
-import type { SyncInput } from '@/services/provider';
 import { Lock } from '@/utils/lock';
 
 const updateRecordDatabaseLock = new Lock('record.service.update-record-database');
@@ -13,36 +18,21 @@ export const updateRecordDatabase = async <Result>({
   database,
   record,
   update,
-  signal,
 }: {
   database: kdbxweb.Kdbx;
   record: FileRecord;
-  signal?: AbortSignal;
   update: (nextDatabase: kdbxweb.Kdbx) => Result | Promise<Result>;
 }): Promise<[nextDatabase: kdbxweb.Kdbx, nextRecord: FileRecord, result: Result]> => {
   return updateRecordDatabaseLock.runInLock(async () => {
-    signal?.throwIfAborted();
     const { storage } = getProvider(record);
-    const nextDatabase = await storage.load({ database, record, signal });
-    signal?.throwIfAborted();
+    const nextDatabase = await storage.load({ database, record });
     const result = await update(nextDatabase);
-    signal?.throwIfAborted();
-    const nextRecord = await storage.save({ database: nextDatabase, record, signal });
+    const nextRecord = storage.save
+      ? await storage.save({ database: nextDatabase, record })
+      : await storage.update(record, { encryptedBytes: await toEncryptedBytes(nextDatabase) });
 
     return [nextDatabase, nextRecord, result];
   });
-};
-
-const syncSessionLock = new Lock('session.service.sync-session');
-
-export const syncSession = async (input: SyncInput) => {
-  const { sync, label } = getProvider(input.record);
-  if (getProvider(input.record).revisionSync) return syncRevisionSession(input);
-  if (!sync) {
-    throw new Error(`${label} does not support sync.`);
-  }
-
-  return syncSessionLock.runInLock(() => sync(input));
 };
 
 type SyncSessionResult = {
@@ -55,20 +45,35 @@ type Synced = {
   source: SyncableRecord['source'];
 };
 
-
+const syncSessionLock = new Lock('session.service.sync-session');
 
 const MAX_SYNC_ATTEMPTS = 3;
 
-const syncRevisionSession = async ({
+export const syncSession = async ({
   record,
   database,
 }: {
   record: FileRecord;
   database: kdbxweb.Kdbx;
 }): Promise<SyncSessionResult> => {
-  const { revisionSync: sync, label } = getProvider(record);
+  const { sync, label } = getProvider(record);
   if (!sync) {
     throw new Error(`${label} does not support sync.`);
+  }
+
+  if ('legacy' in sync) {
+    return syncSessionLock.runInLock(async () => {
+      const remoteBytes = await sync.pull(record, database);
+      const [nextDatabase, nextRecord] = await updateRecordDatabase({
+        database,
+        record,
+        update: async (updatedDatabase) => {
+          updatedDatabase.merge(await loadDatabase({ encryptedBytes: remoteBytes, credentials: updatedDatabase.credentials }));
+          await sync.push(record, await toEncryptedBytes(updatedDatabase), updatedDatabase);
+        },
+      });
+      return { database: nextDatabase, record: nextRecord };
+    });
   }
 
   const load = (encryptedBytes: Uint8Array) => loadDatabase({ encryptedBytes, credentials: database.credentials });

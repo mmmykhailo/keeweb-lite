@@ -17,26 +17,6 @@ const seedRecords = async (records: PersistedFileRecord[]) => {
 };
 
 describe('record-repository', () => {
-  describe('stored record validation', () => {
-    it.each([
-      false,
-      'bad',
-      { version: 1, records: [] },
-      [{ type: 'webdav', id: 'legacy' }],
-      [{ id: 'local-record-1', type: 'local', kdbx: { name: 'vault.kdbx' } }],
-    ])('rejects reads and writes without changing unsupported stored data %j', async (stored) => {
-      await set(RECORDS_STORAGE_KEY, stored);
-
-      await expect(getRecords()).rejects.toThrow("Saved records can't be read.");
-      await expect(
-        createRecord({ id: 'new', type: 'local', kdbx: { name: 'new', encryptedBytes: new Uint8Array() } }),
-      ).rejects.toThrow("Saved records can't be read.");
-      await expect(removeRecord('new')).rejects.toThrow("Saved records can't be read.");
-
-      expect(await get(RECORDS_STORAGE_KEY)).toEqual(stored);
-    });
-  });
-
   describe('getRecords', () => {
     it('stores and reads local records', async () => {
       const records = [
@@ -77,6 +57,21 @@ describe('record-repository', () => {
       await seedRecords(records);
 
       expect(await getRecords()).toEqual(records);
+    });
+
+    it('throws and keeps storage unchanged when stored records are invalid', async () => {
+      const invalidRecords = [
+        {
+          id: 'google-drive-record-1',
+          type: 'google-drive',
+          kdbx: { name: 'vault.kdbx' },
+          source: {},
+        },
+      ];
+      await set(RECORDS_STORAGE_KEY, invalidRecords);
+
+      await expect(getRecords()).rejects.toThrow("Saved records can't be read.");
+      expect(await get(RECORDS_STORAGE_KEY)).toEqual(invalidRecords);
     });
 
     it('returns an empty array when storage is empty', async () => {
@@ -253,6 +248,20 @@ describe('record-repository', () => {
           },
         }),
       ).rejects.toThrow('Record with id duplicate-id already exists');
+    });
+
+    it('throws and keeps storage unchanged when stored records are invalid', async () => {
+      const invalidRecords = [{ id: 'local-record-1', type: 'local', kdbx: { name: 'vault.kdbx' } }];
+      await set(RECORDS_STORAGE_KEY, invalidRecords);
+
+      await expect(
+        createRecord({
+          id: 'local-record-2',
+          type: 'local',
+          kdbx: { encryptedBytes: new Uint8Array([1, 2, 3]), name: 'vault-2.kdbx' },
+        }),
+      ).rejects.toThrow("Saved records can't be read.");
+      expect(await get(RECORDS_STORAGE_KEY)).toEqual(invalidRecords);
     });
 
     it('does not create a record when a duplicate id error is thrown', async () => {

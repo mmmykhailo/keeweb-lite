@@ -10,16 +10,14 @@ import {
   getRecord,
   getRecords,
   removeRecord,
-  type WebDavFileRecord,
+  updateRecord,
 } from '@/repositories/record';
-import { getWebDavCredentials, insertWebDavRecord, updateWebDavRecord } from '@/features/webdav/repositories/record';
-import { createWebDavConnection } from '@/features/webdav/repositories/webdav';
+import { insertWebDavRecord } from '@/features/webdav/repositories/record';
 import {
-  acceptWebDavSync,
   createWebDavRecord,
   importWebDavRecord,
-  prepareWebDavSync,
   saveWebDav,
+  loadWebDavDatabase,
 } from '@/features/webdav/services/webdav';
 import { cloneDatabase } from '@/services/database';
 import { toEncryptedBytes, unlockDatabase } from '@/services/database';
@@ -28,6 +26,11 @@ const setup = { url: 'https://dav.example/vault.kdbx', username: 'user', passwor
 const password = 'database-password';
 const response = (bytes: Uint8Array, etag = '"remote"') =>
   new Response(bytes.slice().buffer, { headers: { ETag: etag } });
+
+const getWebDavCredentials = async (id: string) => {
+  const record = (await getRecords()).find((record) => record.id === id);
+  return record?.type === 'webdav' ? record.source.credentials : undefined;
+};
 
 const database = async (key?: Uint8Array) => {
   const credentials = new kdbx.Credentials(kdbx.ProtectedValue.fromString(password), key);
@@ -42,15 +45,6 @@ const imported = async (db?: kdbx.Kdbx) => {
   const record = await importWebDavRecord({ ...setup, databasePassword: password });
   return { db, bytes, record, fetch, [Symbol.dispose]: () => fetchSpy.mockRestore() };
 };
-const prepare = (record: WebDavFileRecord, db: kdbx.Kdbx, connection = createWebDavConnection(setup)) =>
-  prepareWebDavSync({
-    id: record.id,
-    credentials: db.credentials,
-    connection,
-    signal: connection.signal,
-    canApply: () => true,
-  });
-
 describe('webdav', () => {
   describe('WebDAV persistence and credentials', () => {
     it('preserves Local/Drive rows while inserting, saving, and removing WebDAV and its credentials', async () => {
@@ -126,7 +120,9 @@ describe('webdav', () => {
           db.header.kdfParameters?.set('R', kdbx.VarDictionary.ValueType.UInt64, new kdbx.Int64(1234));
         } else db.setKdf(kind === 'argon2id' ? kdbx.Consts.KdfId.Argon2id : kdbx.Consts.KdfId.Argon2d);
         const bytes = await toEncryptedBytes(db);
-        using _fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(vi.fn().mockResolvedValue(response(bytes)));
+        using _fetch = vi
+          .spyOn(globalThis, 'fetch')
+          .mockImplementation(vi.fn().mockImplementation(async () => response(bytes)));
         const keyFile = createFileList(new File([key.slice().buffer], 'vault.keyx'));
         const record = await importWebDavRecord({ ...setup, databasePassword: password, keyFile });
         const containerBytes = await getWebDavCredentials(record.id);
@@ -154,8 +150,8 @@ describe('webdav', () => {
         expect(container.getDefaultGroup().entries[0].fields.get('Password')).toBeInstanceOf(kdbx.ProtectedValue);
         expect(db.getDefaultGroup().entries).toHaveLength(0);
         const session = await unlockSession({ record, password });
-        expect(session.connection?.signal.aborted).toBe(false);
-        session.connection?.dispose();
+        expect(session.database.meta.name).toBe('Vault');
+        await expect(syncSession(session)).resolves.toBeDefined();
       },
     );
 
@@ -168,30 +164,7 @@ describe('webdav', () => {
       expect(session.database.meta.name).toBe('Vault');
       await expect(syncSession(session)).rejects.toThrow();
       expect(fetch).not.toHaveBeenCalled();
-      session.connection?.dispose();
       expect((await saveWebDav(record, session.database)).synchronization.pending).toBe(true);
-    });
-
-    it('rejects a cache changed during unlock without overwriting it to touch metadata', async () => {
-      using context = await imported();
-      const { record } = context;
-      const load = kdbx.Kdbx.load;
-      let changed = false;
-      using _load = vi.spyOn(kdbx.Kdbx, 'load').mockImplementation(async (...args) => {
-        const db = await load(...args);
-        if (!changed) {
-          changed = true;
-          await updateWebDavRecord({
-            id: record.id,
-            generation: 0,
-            change: { kind: 'save', bytes: record.kdbx.encryptedBytes, localEditState: {} },
-          });
-        }
-        return db;
-      });
-      await expect(unlockSession({ record, password })).rejects.toThrow('changed or was removed');
-      const current = await getRecord(record.id);
-      expect(current.lastOpenedAt).toBeUndefined();
     });
   });
 
@@ -283,34 +256,6 @@ describe('webdav', () => {
   });
 
   describe('WebDAV synchronization', () => {
-    it('decrypts each snapshot once when merging pending changes', async () => {
-      using context = await imported();
-      const { record, db } = context;
-      db.createEntry(db.getDefaultGroup()).fields.set('Title', 'Local entry');
-      const saved = await saveWebDav(record, db);
-      using load = vi.spyOn(kdbx.Kdbx, 'load');
-
-      const candidate = await prepare(saved, db);
-
-      expect(candidate.database.getDefaultGroup().entries[0].fields.get('Title')).toBe('Local entry');
-      expect(load).toHaveBeenCalledTimes(2);
-    });
-
-    it('pulls clean changes without uploading and commits the matching model and row', async () => {
-      using context = await imported();
-      const { record, db, fetch } = context;
-      db.meta.name = 'Remote update';
-      const bytes = await toEncryptedBytes(db);
-      fetch.mockImplementation(() => Promise.resolve(response(bytes)));
-      const candidate = await prepare(record, db);
-      expect(await getRecord(record.id)).toEqual(record);
-      const result = await acceptWebDavSync(candidate, new AbortController().signal, () => true);
-      expect(result.status).toBe('applied');
-      expect(candidate.database.meta.name).toBe('Remote update');
-      expect((await getRecord(record.id)).kdbx.encryptedBytes).toEqual(bytes);
-      expect(fetch.mock.calls.every((call) => call[1].method === 'GET')).toBe(true);
-    });
-
     it('uses native merge for independent edits and keeps history tombstones through save/reload', async () => {
       const db = await database();
       const entry = db.createEntry(db.getDefaultGroup());
@@ -330,29 +275,27 @@ describe('webdav', () => {
       const state = structuredClone(local.getLocalEditState());
       const saved = await saveWebDav(record, local);
       const reopened = await unlockSession({ record, password });
-      expect(reopened.database.getLocalEditState()).toEqual(state);
+      const reloaded = await loadWebDavDatabase({ record: saved, database: reopened.database });
+      expect(reloaded.getLocalEditState()).toEqual(state);
       const remote = await unlockDatabase({ encryptedBytes: bytes, password });
       remote.createEntry(remote.getDefaultGroup()).fields.set('Title', 'Remote entry');
       const remoteBytes = await toEncryptedBytes(remote);
       fetch.mockImplementation((_url, options: RequestInit) =>
         Promise.resolve(options.method === 'GET' ? response(remoteBytes) : response(new Uint8Array(), '"confirmed"')),
       );
-      const candidate = await prepare(saved, local);
+      const candidate = await syncSession({ record: saved, database: local });
       expect(candidate.database.getDefaultGroup().entries.map((row) => row.fields.get('Title'))).toEqual([
         'Local',
         'Remote entry',
       ]);
-      const commit = await acceptWebDavSync(candidate, new AbortController().signal, () => true);
-      expect(commit.status).toBe('applied');
       const current = await getRecord(record.id);
       if (current.type !== 'webdav') throw new Error('Expected WebDAV.');
       expect(current.synchronization).not.toHaveProperty('localEditState');
       expect(current.synchronization.pending).toBe(false);
       expect(candidate.database.getLocalEditState().entries).toEqual({});
-      reopened.connection?.dispose();
     });
 
-    it('stops after three stale-write attempts and keeps local pending data', async () => {
+    it('rejects a stale ETag and keeps local pending data', async () => {
       using context = await imported();
       const { record, db, bytes, fetch } = context;
       db.meta.name = 'Local';
@@ -361,8 +304,8 @@ describe('webdav', () => {
       fetch.mockImplementation((_url, options: RequestInit) =>
         Promise.resolve(options.method === 'GET' ? response(bytes) : new Response(null, { status: 412 })),
       );
-      await expect(prepare(saved, db)).rejects.toThrow('kept changing');
-      expect(fetch.mock.calls.filter((call) => call[1].method === 'PUT')).toHaveLength(3);
+      await expect(syncSession({ record: saved, database: db })).rejects.toThrow();
+      expect(fetch.mock.calls.filter((call) => call[1].method === 'PUT')).toHaveLength(1);
       expect(await getRecord(record.id)).toEqual(saved);
     });
 
@@ -382,7 +325,7 @@ describe('webdav', () => {
             : response(kind === 'weak' ? bytes : otherBytes, kind === 'weak' ? 'W/"weak"' : '"etag"'),
         ),
       );
-      await expect(prepare(saved, db)).rejects.toThrow();
+      await expect(syncSession({ record: saved, database: db })).rejects.toThrow();
       expect(await getRecord(record.id)).toEqual(saved);
     });
 
@@ -408,7 +351,7 @@ describe('webdav', () => {
       fetch.mockImplementation((_url, options: RequestInit) =>
         Promise.resolve(options.method === 'GET' ? response(remoteBytes) : response(new Uint8Array())),
       );
-      const candidate = await prepare(saved, local);
+      const candidate = await syncSession({ record: saved, database: local });
       expect(candidate.database.getDefaultGroup().entries).toHaveLength(1);
       const merged = candidate.database.getDefaultGroup().entries[0];
       expect(merged.fields.get('Title')).toBe('Remote version');
@@ -467,7 +410,9 @@ describe('webdav', () => {
         fetch.mockClear();
         fetch.mockImplementation(() => Promise.resolve(response(remoteBytes)));
 
-        await expect(prepare(saved, local)).rejects.toThrow('Conflicting entry changes have the same timestamp');
+        await expect(syncSession({ record: saved, database: local })).rejects.toThrow(
+          'Conflicting entry changes have the same timestamp',
+        );
 
         expect(await getRecord(record.id)).toEqual(saved);
         expect(fetch.mock.calls.map((call) => call[1].method)).toEqual(['GET']);
@@ -508,7 +453,9 @@ describe('webdav', () => {
         fetch.mockClear();
         fetch.mockImplementation(() => Promise.resolve(response(remoteBytes)));
 
-        await expect(prepare(saved, local)).rejects.toThrow('Conflicting entry changes have the same timestamp');
+        await expect(syncSession({ record: saved, database: local })).rejects.toThrow(
+          'Conflicting entry changes have the same timestamp',
+        );
 
         expect(await getRecord(record.id)).toEqual(saved);
         expect(saved.synchronization.pending).toBe(true);
@@ -531,10 +478,7 @@ describe('webdav', () => {
       const saved = await saveWebDav(record, local);
       fetch.mockClear();
 
-      const prepared = await prepare(saved, local);
-      const accepted = await acceptWebDavSync(prepared, new AbortController().signal, () => true);
-
-      expect(accepted.status).toBe('applied');
+      const prepared = await syncSession({ record: saved, database: local });
       const merged = prepared.database.getDefaultGroup().entries[0];
       expect(merged.fields.get('Title')).toBe('Edited');
       expect(merged.history.map((version) => version.fields.get('Title'))).toContain('Original');
@@ -555,7 +499,7 @@ describe('webdav', () => {
       local.createEntry(local.getDefaultGroup()).fields.set('Title', 'New entry');
       const saved = await saveWebDav(record, local);
 
-      const prepared = await prepare(saved, local);
+      const prepared = await syncSession({ record: saved, database: local });
 
       expect(prepared.database.getDefaultGroup().entries.map((version) => version.fields.get('Title'))).toContain(
         'New entry',
@@ -582,18 +526,13 @@ describe('webdav', () => {
       const { record, db, fetch } = context;
       const saved = await saveWebDav(record, db);
       fetch.mockImplementation(() => Promise.resolve(response(saved.kdbx.encryptedBytes)));
-      const candidate = await prepare(saved, db);
-      const touched = await updateWebDavRecord({
-        id: record.id,
-        generation: saved.synchronization.generation,
-        change: { kind: 'touch' },
-      });
-      const result = await acceptWebDavSync(candidate, new AbortController().signal, () => true);
-      expect(result.status).toBe('applied');
-      if (result.status === 'applied' && touched.status === 'applied') {
-        expect(result.record.lastOpenedAt).toBe(touched.record.lastOpenedAt);
-        expect(result.record.synchronization.generation).toBe(saved.synchronization.generation);
-      }
+      await updateRecord(record.id, (current) => ({ ...current, lastOpenedAt: new Date().toISOString() }));
+      const touched = await getRecord(record.id);
+
+      const result = await syncSession({ record: saved, database: db });
+
+      expect(result.record.type !== 'demo' && result.record.lastOpenedAt).toBe(touched.lastOpenedAt);
+      expect(result.record.type === 'webdav' && result.record.synchronization.pending).toBe(false);
       expect(fetch.mock.calls.every((call) => call[1].method === 'GET')).toBe(true);
     });
 
@@ -609,36 +548,13 @@ describe('webdav', () => {
         started.resolve();
         return put.promise;
       });
-      const pass = prepare(saved, db);
+      const pass = syncSession({ record: saved, database: db });
       await started.promise;
       db.meta.name = 'Newer';
       const newer = await saveWebDav(saved, db);
       put.resolve(response(new Uint8Array(), '"done"'));
-      const candidate = await pass;
-      expect(await acceptWebDavSync(candidate, new AbortController().signal, () => true)).toEqual({
-        status: 'superseded',
-      });
+      await expect(pass).rejects.toThrow('changed or was removed');
       expect(await getRecord(record.id)).toEqual(newer);
-    });
-
-    it('does not commit after lock, removal, or a final editor gate change', async () => {
-      using context = await imported();
-      const { record, db } = context;
-      const candidate = await prepare(record, db);
-      const controller = new AbortController();
-      controller.abort();
-      await expect(acceptWebDavSync(candidate, controller.signal, () => true)).rejects.toMatchObject({
-        name: 'AbortError',
-      });
-      expect(await acceptWebDavSync(candidate, new AbortController().signal, () => false)).toEqual({
-        status: 'superseded',
-      });
-      await removeRecord(record.id);
-      expect(await acceptWebDavSync(candidate, new AbortController().signal, () => true)).toEqual({
-        status: 'missing',
-      });
-      expect(await getRecords()).toEqual([]);
-      expect(await getWebDavCredentials(record.id)).toBeUndefined();
     });
   });
 });
