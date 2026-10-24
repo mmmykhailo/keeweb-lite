@@ -20,7 +20,7 @@ export const webDavProvider = defineProvider({
   sync: {
     legacy: true,
     pull: pullWebDav,
-    push: (record, bytes, database) => pushWebDav({ record, database, bytes }),
+    push: (record, bytes) => pushWebDav({ record, bytes }),
   },
   ImportDialog: ImportWebDavDialog,
   CreateDialog: CreateWebDavDialog,

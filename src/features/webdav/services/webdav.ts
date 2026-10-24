@@ -184,13 +184,13 @@ export const createWebDavRecord = async ({
   }
 };
 
-const snapshots = new WeakMap<WebDavFileRecord, { bytes: Uint8Array; etag?: string }>();
-const uploaded = new WeakMap<kdbx.Kdbx, Uint8Array>();
+const snapshots = new WeakMap<WebDavFileRecord, { bytes: Uint8Array; etag?: string; credentials: kdbx.Credentials }>();
+const uploaded = new WeakMap<WebDavFileRecord, Uint8Array>();
 
 export const saveWebDav = async (record: WebDavFileRecord, database: kdbx.Kdbx, signal?: AbortSignal) => {
   signal?.throwIfAborted();
   const localEditState = structuredClone(database.getLocalEditState());
-  const confirmedBytes = uploaded.get(database);
+  const confirmedBytes = uploaded.get(record);
   const bytes = confirmedBytes ?? (await toEncryptedBytes(database));
   const nextRecord = await updateRecord(record.id, (current) => {
     signal?.throwIfAborted();
@@ -210,16 +210,16 @@ export const saveWebDav = async (record: WebDavFileRecord, database: kdbx.Kdbx, 
     };
   });
   if (nextRecord.type !== 'webdav') throw new Error('WebDAV database not found.');
-  uploaded.delete(database);
+  uploaded.delete(record);
   if (confirmedBytes) database.removeLocalEditState();
   return nextRecord;
 };
 
-const connectWebDav = async (record: WebDavFileRecord, database: kdbx.Kdbx) => {
+const connectWebDav = async (record: WebDavFileRecord, credentials: kdbx.Credentials) => {
   const kdbx = (await import('@/utils/kdbxweb')).default;
   const container = await loadDatabase({
     encryptedBytes: record.source.credentials,
-    credentials: database.credentials,
+    credentials,
   });
   const entry = container.getDefaultGroup().entries[0];
   const username = entry?.fields.get('Username');
@@ -254,7 +254,7 @@ export const loadWebDavDatabase = async ({
 };
 
 export const pullWebDav = async (record: WebDavFileRecord, database: kdbx.Kdbx) => {
-  const connection = await connectWebDav(record, database);
+  const connection = await connectWebDav(record, database.credentials);
   try {
     const snapshot = await connection.read();
     const candidate = await loadWebDavDatabase({ record, database });
@@ -318,32 +318,24 @@ export const pullWebDav = async (record: WebDavFileRecord, database: kdbx.Kdbx) 
         }
       }
     }
-    snapshots.set(record, snapshot);
+    snapshots.set(record, { ...snapshot, credentials: database.credentials });
     return snapshot.bytes;
   } finally {
     connection.dispose();
   }
 };
 
-export const pushWebDav = async ({
-  record,
-  database,
-  bytes,
-}: {
-  record: WebDavFileRecord;
-  database: kdbx.Kdbx;
-  bytes: Uint8Array;
-}) => {
+export const pushWebDav = async ({ record, bytes }: { record: WebDavFileRecord; bytes: Uint8Array }) => {
   const snapshot = snapshots.get(record);
   if (!snapshot) throw new Error('Read the WebDAV file before uploading changes.');
   snapshots.delete(record);
   if (record.synchronization.pending && !equalBytes(record.kdbx.encryptedBytes, snapshot.bytes)) {
-    const connection = await connectWebDav(record, database);
+    const connection = await connectWebDav(record, snapshot.credentials);
     try {
       await connection.write(bytes, snapshot.etag);
     } finally {
       connection.dispose();
     }
   }
-  uploaded.set(database, bytes);
+  uploaded.set(record, bytes);
 };
