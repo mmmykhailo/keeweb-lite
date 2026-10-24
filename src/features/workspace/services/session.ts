@@ -69,7 +69,7 @@ export const syncSession = async ({
         record,
         update: async (updatedDatabase) => {
           updatedDatabase.merge(await loadDatabase({ encryptedBytes: remoteBytes, credentials: updatedDatabase.credentials }));
-          await sync.push(record, await toEncryptedBytes(updatedDatabase), updatedDatabase);
+          await sync.push(record, await toEncryptedBytes(updatedDatabase));
         },
       });
       return { database: nextDatabase, record: nextRecord };

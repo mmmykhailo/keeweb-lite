@@ -55,7 +55,7 @@ export type Sync<Record extends FileRecord = FileRecord, SyncData = undefined> =
 export type LegacySync<Record extends FileRecord = FileRecord> = {
   legacy: true;
   pull: (record: Record, database: kdbxweb.Kdbx) => Promise<Uint8Array>;
-  push: (record: Record, bytes: Uint8Array<ArrayBuffer>, database: kdbxweb.Kdbx) => Promise<unknown>;
+  push: (record: Record, bytes: Uint8Array<ArrayBuffer>) => Promise<unknown>;
 };
 
 export type Provider<Type extends FileRecord['type'] = FileRecord['type']> = {
