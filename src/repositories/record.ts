@@ -85,8 +85,9 @@ type DemoFileRecord = {
 
 export type FileRecord = PersistedFileRecord | DemoFileRecord;
 
-const decodeRecords = (value: unknown): PersistedFileRecord[] => {
-  if (value == null) {
+const readRecords = async () => {
+  const value = await get<unknown>(RECORDS_STORAGE_KEY);
+  if (!value) {
     return [];
   }
 
@@ -95,6 +96,8 @@ const decodeRecords = (value: unknown): PersistedFileRecord[] => {
     return parseResult.data;
   }
 
+  // stored data is only written by this app and always matches the schema, so this isn't expected to happen
+  // in production; it's a safety net that keeps the data untouched so the user can fix it by hand
   console.error('Invalid stored records:', parseResult.error);
 
   throw new Error(
@@ -104,15 +107,13 @@ const decodeRecords = (value: unknown): PersistedFileRecord[] => {
   );
 };
 
-const readRecords = async () => decodeRecords(await get<unknown>(RECORDS_STORAGE_KEY));
-
 export const getRecords = async () => {
   return lock.runInLock(readRecords);
 };
 
-export type SyncableRecord = Extract<PersistedFileRecord, { source: unknown }>;
+export type SyncableRecord = Extract<PersistedFileRecord, { type: 'google-drive' }>;
 
-const isSyncable = (record: PersistedFileRecord): record is SyncableRecord => 'source' in record;
+const isSyncable = (record: PersistedFileRecord): record is SyncableRecord => record.type === 'google-drive';
 
 // `version` counts the local saves and `syncedVersion` is the version that was last synced,
 // a record that was never synced has no `syncedVersion`

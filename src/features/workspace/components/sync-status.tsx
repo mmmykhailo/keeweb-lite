@@ -8,20 +8,11 @@ import { useSync } from '@/features/workspace/hooks/use-sync';
 type SyncStatusProps = {
   session: UnlockSession;
   setSession: SetSession;
-  onSyncApply?: (applying: boolean) => void;
 };
 
-export const SyncStatus = ({ session, setSession, onSyncApply }: SyncStatusProps) => {
+export const SyncStatus = ({ session, setSession }: SyncStatusProps) => {
   const { guardNavigation } = useSafeNet();
-  const {
-    loading: isSyncing,
-    error: syncError,
-    retrySync,
-  } = useSync({
-    ...session,
-    setSession,
-    onSyncApply,
-  });
+  const { loading: isSyncing, error: syncError, triggerSync, retrySync } = useSync({ ...session, setSession });
 
   const syncStatus = isSyncing ? 'syncing' : syncError ? 'error' : 'synced';
 
@@ -35,7 +26,7 @@ export const SyncStatus = ({ session, setSession, onSyncApply }: SyncStatusProps
         toast.success('Database syncing.');
         break;
       case 'synced':
-        toast.success('Database synced.');
+        triggerSync();
         break;
       default: {
         const exhaustiveCheck: never = syncStatus;
@@ -49,7 +40,13 @@ export const SyncStatus = ({ session, setSession, onSyncApply }: SyncStatusProps
       aria-label={`Sync status: ${syncStatus}`}
       className="flex shrink-0 cursor-pointer appearance-none items-center gap-1 border-0 bg-transparent p-0 text-[11px] text-muted-foreground focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
       onClick={() => guardNavigation(onSync)}
-      title={syncStatus === 'error' ? 'Sync error — click to retry' : syncStatus === 'syncing' ? 'Syncing' : 'Synced'}
+      title={
+        syncStatus === 'error'
+          ? 'Sync error — click to retry'
+          : syncStatus === 'syncing'
+            ? 'Syncing'
+            : 'Synced — click to sync now'
+      }
       type="button"
     >
       <span

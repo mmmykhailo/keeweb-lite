@@ -8,10 +8,9 @@ type WorkspaceControlsProps = {
   session: UnlockSession;
   setSession: SetSession;
   onWorkspaceLock: () => void;
-  onSyncApply?: (applying: boolean) => void;
 };
 
-export const WorkspaceControls = ({ session, setSession, onWorkspaceLock, onSyncApply }: WorkspaceControlsProps) => {
+export const WorkspaceControls = ({ session, setSession, onWorkspaceLock }: WorkspaceControlsProps) => {
   const { record } = session;
   const { sync, isConfigured, label } = getProvider(record);
 
@@ -24,7 +23,7 @@ export const WorkspaceControls = ({ session, setSession, onWorkspaceLock, onSync
           </span>
           {sync &&
             (isConfigured() ? (
-              <SyncStatus session={session} setSession={setSession} onSyncApply={onSyncApply} />
+              <SyncStatus session={session} setSession={setSession} />
             ) : (
               <SyncUnavailable label={label} />
             ))}

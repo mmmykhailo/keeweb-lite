@@ -1,23 +1,21 @@
 import type kdbx from '@/utils/kdbxweb';
-import { getRecord, getRecords, type PersistedFileRecord, type WebDavFileRecord } from '@/repositories/record';
 import {
-  createWebDavRecovery,
-  getWebDavCredentials,
-  insertWebDavRecord,
-  updateWebDavRecord,
-  equalBytes,
-} from '@/features/webdav/repositories/record';
+  createRecord,
+  updateRecord,
+  getRecord,
+  getRecords,
+  type PersistedFileRecord,
+  type WebDavFileRecord,
+} from '@/repositories/record';
+import { insertWebDavRecord, equalBytes } from '@/features/webdav/repositories/record';
 import {
   createWebDavConnection,
   validateWebDavSetup,
   WebDavError,
-  type WebDavConnection,
   type WebDavSetup,
 } from '@/features/webdav/repositories/webdav';
 import { createEmptyDatabase, toEncryptedBytes, unlockDatabase, loadDatabase } from '@/services/database';
 import { validateNewDatabaseInput, toKey } from '@/services/record';
-import { Lock } from '@/utils/lock';
-import type { SyncOptions } from '@/services/provider';
 
 const encryptConnection = async (setup: WebDavSetup, database: kdbx.Kdbx) => {
   const kdbx = (await import('@/utils/kdbxweb')).default;
@@ -141,15 +139,12 @@ export const createWebDavRecord = async ({
     recoveryName = `${name}-recovery-${crypto.randomUUID()}.kdbx`;
   }
   signal?.throwIfAborted();
-  const recovery = await createWebDavRecovery(
-    {
-      id: crypto.randomUUID(),
-      type: 'local',
-      kdbx: { name: recoveryName, encryptedBytes },
-      key: generatedKey?.key,
-    },
-    signal,
-  );
+  const recovery = await createRecord({
+    id: crypto.randomUUID(),
+    type: 'local',
+    kdbx: { name: recoveryName, encryptedBytes },
+    key: generatedKey?.key,
+  });
   const generatedKeyFile = generatedKey ? { bytes: generatedKey.keyFileBytes, name: generatedKey.key.name } : undefined;
   const connection = createWebDavConnection(setup);
   try {
@@ -189,64 +184,87 @@ export const createWebDavRecord = async ({
   }
 };
 
+const snapshots = new WeakMap<WebDavFileRecord, { bytes: Uint8Array; etag?: string }>();
+const uploaded = new WeakMap<kdbx.Kdbx, Uint8Array>();
+
 export const saveWebDav = async (record: WebDavFileRecord, database: kdbx.Kdbx, signal?: AbortSignal) => {
   signal?.throwIfAborted();
   const localEditState = structuredClone(database.getLocalEditState());
-  const bytes = await toEncryptedBytes(database);
-  const result = await updateWebDavRecord({
-    id: record.id,
-    generation: record.synchronization.generation,
-    change: { kind: 'save', bytes, localEditState },
-    signal,
-  });
-  if (result.status !== 'applied')
-    throw new Error('The saved database changed or was removed. Download your edits before reopening.');
-  return result.record;
-};
-
-export type PreparedWebDavSync = {
-  record: WebDavFileRecord;
-  database: kdbx.Kdbx;
-  bytes: Uint8Array;
-};
-
-export const prepareWebDavSync = async ({
-  id,
-  connection,
-  credentials,
-  signal,
-  canApply,
-}: {
-  id: string;
-  connection: WebDavConnection;
-  credentials: kdbx.Credentials;
-  signal: AbortSignal;
-  canApply: () => boolean;
-}): Promise<PreparedWebDavSync> =>
-  new Lock(`webdav.service.sync.${id}`).runInLock(async () => {
-    const check = () => {
-      signal.throwIfAborted();
-      connection.signal.throwIfAborted();
-      if (!canApply()) throw new DOMException('WebDAV refresh deferred.', 'AbortError');
+  const confirmedBytes = uploaded.get(database);
+  const bytes = confirmedBytes ?? (await toEncryptedBytes(database));
+  const nextRecord = await updateRecord(record.id, (current) => {
+    signal?.throwIfAborted();
+    if (current.type !== 'webdav' || current.synchronization.generation !== record.synchronization.generation) {
+      throw new Error('The saved database changed or was removed. Download your edits before reopening.');
+    }
+    return {
+      ...current,
+      kdbx: { ...current.kdbx, encryptedBytes: bytes.slice() },
+      synchronization: {
+        generation:
+          current.synchronization.generation +
+          (!confirmedBytes || !equalBytes(current.kdbx.encryptedBytes, bytes) ? 1 : 0),
+        pending: !confirmedBytes,
+        ...(!confirmedBytes ? { localEditState } : {}),
+      },
     };
-    check();
-    const record = await getRecord(id);
-    if (record.type !== 'webdav') throw new Error('WebDAV database was removed.');
-    const load = async (bytes: Uint8Array) => loadDatabase({ encryptedBytes: bytes, credentials });
-    let snapshot = await connection.read(signal);
-    for (let attempt = 0; attempt < 3; attempt++) {
-      check();
-      const candidate = await load(record.kdbx.encryptedBytes);
-      check();
-      const remote = await load(snapshot.bytes);
-      if (!candidate.getDefaultGroup().uuid.equals(remote.getDefaultGroup().uuid)) {
-        throw new Error('The WebDAV file is a different database. The local cache has been kept.');
-      }
-      if (!record.synchronization.pending || equalBytes(record.kdbx.encryptedBytes, snapshot.bytes)) {
-        return { record, database: remote, bytes: snapshot.bytes };
-      }
+  });
+  if (nextRecord.type !== 'webdav') throw new Error('WebDAV database not found.');
+  uploaded.delete(database);
+  if (confirmedBytes) database.removeLocalEditState();
+  return nextRecord;
+};
+
+const connectWebDav = async (record: WebDavFileRecord, database: kdbx.Kdbx) => {
+  const kdbx = (await import('@/utils/kdbxweb')).default;
+  const container = await loadDatabase({
+    encryptedBytes: record.source.credentials,
+    credentials: database.credentials,
+  });
+  const entry = container.getDefaultGroup().entries[0];
+  const username = entry?.fields.get('Username');
+  const password = entry?.fields.get('Password');
+  if (!(username instanceof kdbx.ProtectedValue) || !(password instanceof kdbx.ProtectedValue)) {
+    throw new Error('Saved WebDAV credentials are invalid. Download and reimport to reconnect.');
+  }
+  return createWebDavConnection({ url: record.source.url, username: username.getText(), password: password.getText() });
+};
+
+export const loadWebDavDatabase = async ({
+  database,
+  record,
+  signal,
+}: {
+  database: kdbx.Kdbx;
+  record: WebDavFileRecord;
+  signal?: AbortSignal;
+}) => {
+  signal?.throwIfAborted();
+  const current = await getRecord(record.id);
+  if (current.type !== 'webdav' || current.synchronization.generation !== record.synchronization.generation) {
+    throw new Error('The saved database changed or was removed. Download your edits before reopening.');
+  }
+  const nextDatabase = await loadDatabase({
+    encryptedBytes: current.kdbx.encryptedBytes,
+    credentials: database.credentials,
+  });
+  if (current.synchronization.localEditState)
+    nextDatabase.setLocalEditState(structuredClone(current.synchronization.localEditState));
+  return nextDatabase;
+};
+
+export const pullWebDav = async (record: WebDavFileRecord, database: kdbx.Kdbx) => {
+  const connection = await connectWebDav(record, database);
+  try {
+    const snapshot = await connection.read();
+    const candidate = await loadWebDavDatabase({ record, database });
+    const remote = await loadDatabase({ encryptedBytes: snapshot.bytes, credentials: database.credentials });
+    if (!candidate.getDefaultGroup().uuid.equals(remote.getDefaultGroup().uuid)) {
+      throw new Error('The WebDAV file is a different database. The local cache has been kept.');
+    }
+    if (record.synchronization.pending) {
       // KDBX drops milliseconds. kdbxweb identifies current and historical versions by
-      // timestamp, so a collision can discard remote content unless it is preserved locally.
+      // timestamp; refuse collisions that could discard remote content.
       const kdbx = (await import('@/utils/kdbxweb')).default;
       const entryContent = (version: kdbx.KdbxEntry) =>
         JSON.stringify(
@@ -299,136 +317,33 @@ export const prepareWebDavSync = async ({
           }
         }
       }
-      if (record.synchronization.localEditState)
-        candidate.setLocalEditState(structuredClone(record.synchronization.localEditState));
-      candidate.merge(remote);
-      const bytes = await toEncryptedBytes(candidate);
-      check();
-      try {
-        await connection.write(bytes, snapshot.etag, false, signal);
-        check();
-        return { record, database: candidate, bytes };
-      } catch (error) {
-        if (!(error instanceof WebDavError) || !['precondition', 'unconfirmed'].includes(error.code)) throw error;
-        if (attempt === 2) break;
-        snapshot = await connection.read(signal);
-      }
     }
-    throw new Error('The WebDAV file kept changing. Local changes are saved; retry synchronization.');
-  });
-
-export const acceptWebDavSync = async (prepared: PreparedWebDavSync, signal: AbortSignal, canApply: () => boolean) => {
-  const result = await updateWebDavRecord({
-    id: prepared.record.id,
-    generation: prepared.record.synchronization.generation,
-    change: { kind: 'sync', bytes: prepared.bytes },
-    signal,
-    accept: canApply,
-  });
-  if (result.status === 'applied') prepared.database.removeLocalEditState();
-  return result;
+    snapshots.set(record, snapshot);
+    return snapshot.bytes;
+  } finally {
+    connection.dispose();
+  }
 };
 
-export const loadWebDavDatabase = async ({
-  database,
+export const pushWebDav = async ({
   record,
-  signal,
+  database,
+  bytes,
 }: {
-  database: kdbx.Kdbx;
   record: WebDavFileRecord;
-  signal?: AbortSignal;
+  database: kdbx.Kdbx;
+  bytes: Uint8Array;
 }) => {
-  signal?.throwIfAborted();
-  const current = await getRecord(record.id);
-  if (current.type !== 'webdav' || current.synchronization.generation !== record.synchronization.generation) {
-    throw new Error('The saved database changed or was removed. Download your edits before reopening.');
-  }
-  const nextDatabase = await loadDatabase({
-    encryptedBytes: current.kdbx.encryptedBytes,
-    credentials: database.credentials,
-  });
-  if (current.synchronization.localEditState)
-    nextDatabase.setLocalEditState(structuredClone(current.synchronization.localEditState));
-  return nextDatabase;
-};
-
-export const unlockWebDav = async (id: string, password: string) => {
-  const kdbx = (await import('@/utils/kdbxweb')).default;
-  const record = await getRecord(id);
-  if (record.type !== 'webdav') throw new Error('WebDAV database not found.');
-  const database = await unlockDatabase({
-    encryptedBytes: record.kdbx.encryptedBytes,
-    password,
-    keyFileHashBase64: record.key?.hash,
-  });
-  if (record.synchronization.localEditState)
-    database.setLocalEditState(structuredClone(record.synchronization.localEditState));
-  let connection: WebDavConnection | undefined;
-  try {
-    const bytes = await getWebDavCredentials(id);
-    if (!bytes) throw new Error('Saved WebDAV credentials are missing. Download and reimport to reconnect.');
-    const container = await unlockDatabase({ encryptedBytes: bytes, password, keyFileHashBase64: record.key?.hash });
-    const entry = container.getDefaultGroup().entries[0];
-    const username = entry?.fields.get('Username');
-    const serverPassword = entry?.fields.get('Password');
-    if (!(username instanceof kdbx.ProtectedValue) || !(serverPassword instanceof kdbx.ProtectedValue)) {
-      throw new Error('Saved WebDAV credentials are invalid. Download and reimport to reconnect.');
+  const snapshot = snapshots.get(record);
+  if (!snapshot) throw new Error('Read the WebDAV file before uploading changes.');
+  snapshots.delete(record);
+  if (record.synchronization.pending && !equalBytes(record.kdbx.encryptedBytes, snapshot.bytes)) {
+    const connection = await connectWebDav(record, database);
+    try {
+      await connection.write(bytes, snapshot.etag);
+    } finally {
+      connection.dispose();
     }
-    connection = createWebDavConnection({
-      url: record.source.url,
-      username: username.getText(),
-      password: serverPassword.getText(),
-    });
-  } catch (error) {
-    const connectionError = error instanceof Error ? error : new Error('Unable to unlock WebDAV credentials.');
-    const controller = new AbortController();
-    connection = {
-      signal: controller.signal,
-      dispose: () => controller.abort(),
-      read: async () => {
-        throw connectionError;
-      },
-      write: async () => {
-        throw connectionError;
-      },
-    };
   }
-  const activeConnection = connection;
-  try {
-    const result = await updateWebDavRecord({
-      id,
-      generation: record.synchronization.generation,
-      change: { kind: 'touch' },
-    });
-    if (result.status !== 'applied') throw new Error('The saved database changed or was removed. Unlock it again.');
-    return {
-      database,
-      record: result.record,
-      version: 0,
-      connection: {
-        signal: activeConnection.signal,
-        dispose: activeConnection.dispose,
-        sync: async ({ signal = activeConnection.signal, canApply = () => true, onApply }: SyncOptions) => {
-          const prepared = await prepareWebDavSync({
-            id,
-            connection: activeConnection,
-            credentials: database.credentials,
-            signal,
-            canApply,
-          });
-          signal.throwIfAborted();
-          if (!canApply()) throw new DOMException('Sync deferred.', 'AbortError');
-          onApply?.();
-          const accepted = await acceptWebDavSync(prepared, signal, canApply);
-          if (accepted.status === 'missing')
-            throw new Error('The database was removed. Download your database before closing.');
-          if (accepted.status === 'superseded') throw new DOMException('Sync deferred.', 'AbortError');
-          return { database: prepared.database, record: accepted.record };
-        },
-      },
-    };
-  } catch (error) {
-    connection?.dispose();
-    throw error;
-  }
+  uploaded.set(database, bytes);
 };
