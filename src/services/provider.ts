@@ -1,6 +1,6 @@
 import type kdbxweb from '@/utils/kdbxweb';
 import type { ComponentType } from 'react';
-import { getRecord, markSaved, updateRecord, type FileRecord } from '@/repositories/record';
+import { getRecord, markSaved, updateRecord, type FileRecord, type SyncableRecord } from '@/repositories/record';
 import { loadDatabase } from '@/services/database';
 import { kebabCaseToTitle } from '@/utils/string';
 
@@ -46,10 +46,18 @@ export class SyncConflictError extends Error {
 // `push` returns the new `source` of the record, which is saved with the pushed bytes.
 // Whether the local copy changed since the last sync is tracked by `version` and `syncedVersion` on the record.
 export type Sync<Record extends FileRecord = FileRecord, SyncData = undefined> = {
+  legacy?: false;
   check?: (record: Record) => Promise<{ data: SyncData; isRemoteChanged: boolean }>;
-  pull(record: Record, data: SyncData): Promise<{ bytes: Uint8Array<ArrayBuffer>; source: SourceOf<Record> }>;
+  pull(
+    record: Record,
+    data: SyncData,
+  ): Promise<{ bytes: Uint8Array<ArrayBuffer>; source: SourceOf<Extract<Record, SyncableRecord>> }>;
   // must throw SyncConflictError if the remote changed since `check` returned `data`
-  push(record: Record, bytes: Uint8Array<ArrayBuffer>, data: SyncData): Promise<SourceOf<Record>>;
+  push(
+    record: Record,
+    bytes: Uint8Array<ArrayBuffer>,
+    data: SyncData,
+  ): Promise<SourceOf<Extract<Record, SyncableRecord>>>;
 };
 
 export type LegacySync<Record extends FileRecord = FileRecord> = {
@@ -70,7 +78,9 @@ export type Provider<Type extends FileRecord['type'] = FileRecord['type']> = {
 };
 
 type ProviderConfig<Type extends FileRecord['type'], SyncData> = Pick<Provider<Type>, 'type'> &
-  Partial<Omit<Provider<Type>, 'type' | 'sync'>> & { sync?: Sync<RecordOf<Type>, SyncData> | LegacySync<RecordOf<Type>> };
+  Partial<Omit<Provider<Type>, 'type' | 'sync'>> & {
+    sync?: Sync<RecordOf<Type>, SyncData> | LegacySync<RecordOf<Type>>;
+  };
 
 export const defineProvider = <Type extends FileRecord['type'], SyncData = undefined>(
   provider: ProviderConfig<Type, SyncData>,

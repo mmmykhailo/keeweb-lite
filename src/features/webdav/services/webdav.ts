@@ -195,7 +195,6 @@ const uploaded = new WeakMap<WebDavFileRecord, Uint8Array>();
 
 export const saveWebDav = async (record: WebDavFileRecord, database: kdbx.Kdbx, signal?: AbortSignal) => {
   signal?.throwIfAborted();
-  const localEditState = structuredClone(database.getLocalEditState());
   const confirmedBytes = uploaded.get(record);
   const bytes = confirmedBytes ?? (await toEncryptedBytes(database));
   const nextRecord = await updateRecord(record.id, (current) => {
@@ -211,13 +210,11 @@ export const saveWebDav = async (record: WebDavFileRecord, database: kdbx.Kdbx, 
           current.synchronization.generation +
           (!confirmedBytes || !equalBytes(current.kdbx.encryptedBytes, bytes) ? 1 : 0),
         pending: !confirmedBytes,
-        ...(!confirmedBytes ? { localEditState } : {}),
       },
     };
   });
   if (nextRecord.type !== 'webdav') throw new Error('WebDAV database not found.');
   uploaded.delete(record);
-  if (confirmedBytes) database.removeLocalEditState();
   return nextRecord;
 };
 
@@ -250,13 +247,10 @@ export const loadWebDavDatabase = async ({
   if (current.type !== 'webdav' || current.synchronization.generation !== record.synchronization.generation) {
     throw new Error('The saved database changed or was removed. Download your edits before reopening.');
   }
-  const nextDatabase = await loadDatabase({
+  return loadDatabase({
     encryptedBytes: current.kdbx.encryptedBytes,
     credentials: database.credentials,
   });
-  if (current.synchronization.localEditState)
-    nextDatabase.setLocalEditState(structuredClone(current.synchronization.localEditState));
-  return nextDatabase;
 };
 
 export const pullWebDav = async (record: WebDavFileRecord, database: kdbx.Kdbx) => {

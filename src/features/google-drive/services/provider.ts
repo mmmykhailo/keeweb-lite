@@ -6,7 +6,7 @@ import {
   isGoogleDriveConfigured,
   updateFile,
 } from '@/features/google-drive/repositories/google-drive';
-import { defineProvider, SyncConflictError } from '@/services/provider';
+import { defineProvider, SyncConflictError, type RecordOf } from '@/services/provider';
 
 export const googleDriveProvider = defineProvider({
   type: 'google-drive',
@@ -18,7 +18,7 @@ export const googleDriveProvider = defineProvider({
 
       return { data: headRevisionId, isRemoteChanged: headRevisionId !== source.rev };
     },
-    pull: async ({ source }, rev) => ({
+    pull: async ({ source }: RecordOf<'google-drive'>, rev: string) => ({
       bytes: await getRevisionFile(source.id, rev),
       source: { ...source, rev },
     }),
