@@ -38,6 +38,8 @@ const googleDriveFileRecordSchema = z.object({
   type: z.literal('google-drive'),
 });
 
+// KDBX files omit history deletion markers; keep them until WebDAV sync succeeds
+// so merging after an offline save and reopen does not restore deleted history.
 const localEditStateSchema = z.object({
   entries: z.optional(z.record(z.string(), z.object({ added: z.array(z.number()), deleted: z.array(z.number()) }))),
   meta: z.optional(

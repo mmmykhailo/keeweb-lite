@@ -283,11 +283,14 @@ describe('webdav', () => {
       fetch.mockImplementation((_url, options: RequestInit) =>
         Promise.resolve(options.method === 'GET' ? response(remoteBytes) : response(new Uint8Array(), '"confirmed"')),
       );
-      const candidate = await syncSession({ record: saved, database: local });
+      const candidate = await syncSession({ record: saved, database: reloaded });
       expect(candidate.database.getDefaultGroup().entries.map((row) => row.fields.get('Title'))).toEqual([
         'Local',
         'Remote entry',
       ]);
+      expect(
+        candidate.database.getDefaultGroup().entries[0].history.map((version) => version.fields.get('Title')),
+      ).not.toContain('Original');
       const current = await getRecord(record.id);
       if (current.type !== 'webdav') throw new Error('Expected WebDAV.');
       expect(current.synchronization).not.toHaveProperty('localEditState');
