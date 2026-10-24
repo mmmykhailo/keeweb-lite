@@ -131,7 +131,7 @@ export const createWebDavRecord = async ({
   const setup = validateWebDavSetup(setupInput);
   const { name, kdbxFileName } = validateNewDatabaseInput(databaseName, password);
   signal?.throwIfAborted();
-  const { encryptedBytes, generatedKey, database } = await createEmptyDatabase({ name, password, useKeyFile });
+  const { encryptedBytes, generatedKey } = await createEmptyDatabase({ name, password, useKeyFile });
   signal?.throwIfAborted();
   const records = await getRecords();
   let recoveryName = kdbxFileName;
@@ -148,6 +148,12 @@ export const createWebDavRecord = async ({
   const generatedKeyFile = generatedKey ? { bytes: generatedKey.keyFileBytes, name: generatedKey.key.name } : undefined;
   const connection = createWebDavConnection(setup);
   try {
+    signal?.throwIfAborted();
+    const database = await unlockDatabase({
+      encryptedBytes,
+      password,
+      keyFileHashBase64: generatedKey?.key.hash,
+    });
     signal?.throwIfAborted();
     const credentials = await encryptConnection(setup, database);
     signal?.throwIfAborted();

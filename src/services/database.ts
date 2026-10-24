@@ -88,7 +88,7 @@ export const createEmptyDatabase = async ({
   const database = kdbxweb.Kdbx.create(credentials, name);
   const encryptedBytes = await toEncryptedBytes(database);
 
-  return { encryptedBytes, generatedKey, database };
+  return { encryptedBytes, generatedKey };
 };
 
 export const cloneDatabase = async (database: kdbxweb.Kdbx): Promise<kdbxweb.Kdbx> => {
