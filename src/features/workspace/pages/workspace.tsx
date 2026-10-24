@@ -1,5 +1,5 @@
 import type kdbxweb from '@/utils/kdbxweb';
-import { useState } from 'react';
+import { useEffect, useState, type SyntheticEvent } from 'react';
 import { type SetSession, type UnlockSession } from '@/features/unlock/services/session';
 import {
   createEntry,
@@ -25,7 +25,9 @@ type WorkspacePageProps = {
 };
 
 export const WorkspacePage = ({ session, setSession }: WorkspacePageProps) => {
-  const { database, record } = session;
+  const { database, record, connection } = session;
+  const [isApplyingSync, setApplyingSync] = useState(false);
+  useEffect(() => () => connection?.dispose(), [connection]);
   const [selectFilter, setSelectFilter] = useState<SelectFilter>(null);
   const [selectedEntryUuid, setSelectedEntryUuid] = useState<kdbxweb.KdbxUuid | null>(null);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -33,13 +35,22 @@ export const WorkspacePage = ({ session, setSession }: WorkspacePageProps) => {
   const { guardNavigation } = useSafeNet();
   const { setMutating } = useEntryMutation();
 
+  const blockSyncEditing = isApplyingSync
+    ? (event: SyntheticEvent) => {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    : undefined;
+
   const selectedEntry = selectedEntryUuid ? findEntryByUuid(database, selectedEntryUuid) : null;
 
   const handleSelectEntry = (uuid: kdbxweb.KdbxUuid) => {
+    if (isApplyingSync) return;
     guardNavigation(() => setSelectedEntryUuid(uuid));
   };
 
   const handleSelectFilterChange = (nextSelectFilter: SelectFilter) => {
+    if (isApplyingSync) return;
     guardNavigation(() => {
       setSelectFilter(nextSelectFilter);
       setSelectedEntryUuid(null);
@@ -52,6 +63,8 @@ export const WorkspacePage = ({ session, setSession }: WorkspacePageProps) => {
   const handleSave = ({ nextDatabase, nextEntryUuid, nextRecord }: EntryMutationResult) => {
     setSession((previousSession) => {
       if (!previousSession) return previousSession;
+      if (connection?.signal.aborted || previousSession.database.credentials !== database.credentials)
+        return previousSession;
 
       return {
         ...previousSession,
@@ -65,6 +78,7 @@ export const WorkspacePage = ({ session, setSession }: WorkspacePageProps) => {
   };
 
   const onWorkspaceLock = () => {
+    connection?.dispose();
     setSession(null);
     setSelectedEntryUuid(null);
     setIsMobileMenuOpen(false);
@@ -78,16 +92,19 @@ export const WorkspacePage = ({ session, setSession }: WorkspacePageProps) => {
   const createNewEntry = async () => {
     setMutating(true);
     try {
-      handleSave(await createEntry({ database, record, selectFilter }));
+      const result = await createEntry({ database, record, selectFilter, signal: connection?.signal });
+      connection?.signal.throwIfAborted();
+      handleSave(result);
       toast.success('Entry created.');
     } catch (error) {
-      toast.error(getErrorMessage({ error, fallback: 'Entry creation failed.' }));
+      if (!connection?.signal.aborted) toast.error(getErrorMessage({ error, fallback: 'Entry creation failed.' }));
     } finally {
       setMutating(false);
     }
   };
 
   const handleCreateEntry = () => {
+    if (isApplyingSync) return;
     guardNavigation(() => void createNewEntry());
   };
 
@@ -97,8 +114,19 @@ export const WorkspacePage = ({ session, setSession }: WorkspacePageProps) => {
 
   return (
     <div className="box-border flex h-svh min-h-svh flex-col overflow-hidden bg-background pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] text-foreground sm:h-dvh sm:min-h-dvh sm:py-0">
-      <WorkspaceControls session={session} setSession={setSession} onWorkspaceLock={handleLock} />
-      <div className="flex min-h-0 flex-1 overflow-hidden">
+      <WorkspaceControls
+        session={session}
+        setSession={setSession}
+        onWorkspaceLock={handleLock}
+        onSyncApply={setApplyingSync}
+      />
+      <div
+        inert={isApplyingSync}
+        onClickCapture={blockSyncEditing}
+        onKeyDownCapture={blockSyncEditing}
+        onBeforeInputCapture={blockSyncEditing}
+        className="flex min-h-0 flex-1 overflow-hidden"
+      >
         {isDesktopMode && (
           <MenuPane
             className="flex"
@@ -125,6 +153,7 @@ export const WorkspacePage = ({ session, setSession }: WorkspacePageProps) => {
             selectedEntry={selectedEntry}
             database={database}
             record={record}
+            signal={connection?.signal}
             onEntrySave={handleSave}
             showBackButton={isMobile}
             onBack={handleBack}

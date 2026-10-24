@@ -8,11 +8,20 @@ import { useSync } from '@/features/workspace/hooks/use-sync';
 type SyncStatusProps = {
   session: UnlockSession;
   setSession: SetSession;
+  onSyncApply?: (applying: boolean) => void;
 };
 
-export const SyncStatus = ({ session, setSession }: SyncStatusProps) => {
+export const SyncStatus = ({ session, setSession, onSyncApply }: SyncStatusProps) => {
   const { guardNavigation } = useSafeNet();
-  const { loading: isSyncing, error: syncError, retrySync } = useSync({ ...session, setSession });
+  const {
+    loading: isSyncing,
+    error: syncError,
+    retrySync,
+  } = useSync({
+    ...session,
+    setSession,
+    onSyncApply,
+  });
 
   const syncStatus = isSyncing ? 'syncing' : syncError ? 'error' : 'synced';
 

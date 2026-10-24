@@ -6,7 +6,7 @@ keeweb-lite is a lightweight, web-only password manager inspired by [KeeWeb](htt
 
 ## Features
 
-- Source types: `Local` and optional `Google Drive`.
+- Source types: `Local`, `WebDAV`, and optional `Google Drive`.
 - Unlock with password and optional key file.
 - Key file stays in runtime memory during unlock flow.
 - Google Drive records sync after every change.
@@ -76,6 +76,10 @@ Use Docker Compose:
 # Optionally set `PUBLIC_GOOGLE_CLIENT_ID` and `PUBLIC_GOOGLE_APP_ID` in `.env`, then run:
 docker compose up -d --build # App is available at `http://localhost:4321`.
 ```
+
+## WebDAV Setup
+
+Use a full HTTPS file URL with Basic credentials or an app password. The parent collection must exist. For cross-origin access, allow the app origin, GET/PUT, and the `Authorization`, `Content-Type`, `If-Match`, and `If-None-Match` headers. Expose a strong ETag with `Access-Control-Expose-Headers: ETag`; without it, updates are disabled.
 
 ## Google Drive Setup
 

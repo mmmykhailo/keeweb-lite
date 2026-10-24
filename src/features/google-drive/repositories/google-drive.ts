@@ -84,12 +84,13 @@ export const driveFileSchema = z.object({
 
 export type DriveFile = z.infer<typeof driveFileSchema>;
 
-export const getFile = async (fileId: string): Promise<Uint8Array<ArrayBuffer>> => {
+export const getFile = async (fileId: string, signal?: AbortSignal): Promise<Uint8Array<ArrayBuffer>> => {
   const accessToken = await auth.getAccessToken();
 
   const params = new URLSearchParams({ alt: 'media' });
 
   const response = await fetch(`${DRIVE_API_BASE}/files/${fileId}?${params}`, {
+    signal,
     headers: { Authorization: `Bearer ${accessToken}` },
   });
 
@@ -139,12 +140,17 @@ export const createFile = async (fileName: string, data: Uint8Array<ArrayBuffer>
   return driveFileSchema.parse(await response.json());
 };
 
-export const updateFile = async (fileId: string, data: Uint8Array<ArrayBuffer>): Promise<DriveFile> => {
+export const updateFile = async (
+  fileId: string,
+  data: Uint8Array<ArrayBuffer>,
+  signal?: AbortSignal,
+): Promise<DriveFile> => {
   const accessToken = await auth.getAccessToken();
 
   const params = new URLSearchParams({ uploadType: 'media', fields: 'id,name,modifiedTime' });
 
   const response = await fetch(`${DRIVE_UPLOAD_BASE}/files/${fileId}?${params}`, {
+    signal,
     method: 'PATCH',
     headers: {
       Authorization: `Bearer ${accessToken}`,

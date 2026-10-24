@@ -1,7 +1,7 @@
 import * as z from 'zod/mini';
 import type kdbxweb from '@/utils/kdbxweb';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
 import { toast } from 'sonner';
 import { HugeiconsIcon } from '@hugeicons/react';
@@ -59,10 +59,11 @@ type EntryEditFormProps = {
   database: kdbxweb.Kdbx;
   entry: kdbxweb.KdbxEntry;
   record: FileRecord;
+  signal?: AbortSignal;
   onEntrySave: (result: EntryMutationResult) => void;
 };
 
-export const EntryEditForm = ({ database, entry, record, onEntrySave }: EntryEditFormProps) => {
+export const EntryEditForm = ({ database, entry, record, onEntrySave, signal }: EntryEditFormProps) => {
   const { setDirty, registerDiscard } = useSafeNet();
   const { isMutating, setMutating } = useEntryMutation();
   const {
@@ -70,6 +71,7 @@ export const EntryEditForm = ({ database, entry, record, onEntrySave }: EntryEdi
     handleSubmit,
     reset,
     setValue,
+    subscribe,
     formState: { isDirty, isSubmitting },
   } = useForm<EntryEditValues>({
     defaultValues: getEntryValues(entry),
@@ -78,9 +80,17 @@ export const EntryEditForm = ({ database, entry, record, onEntrySave }: EntryEdi
 
   const [showPassword, setShowPassword] = useState(false);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setDirty(isDirty);
-  }, [isDirty, setDirty]);
+    return subscribe({
+      formState: { isDirty: true },
+      callback: ({ isDirty }) => {
+        if (isDirty !== undefined) setDirty(isDirty);
+      },
+    });
+  }, [isDirty, setDirty, subscribe]);
+
+  useLayoutEffect(() => reset(getEntryValues(entry)), [entry, reset]);
 
   useEffect(() => {
     return () => setDirty(false);
@@ -96,13 +106,14 @@ export const EntryEditForm = ({ database, entry, record, onEntrySave }: EntryEdi
     setMutating(true);
     try {
       const entryUuid = entry.uuid.toString();
-      const result = await saveEntry({ database, record, entryUuid, values });
+      const result = await saveEntry({ database, record, entryUuid, values, signal });
 
+      signal?.throwIfAborted();
       reset(values); // Reset the form state after the successful saving (isDirty, touched state, etc)
       onEntrySave?.(result);
       toast.success('Entry saved.');
     } catch (error) {
-      toast.error(getErrorMessage({ error, fallback: 'Entry save failed.' }));
+      if (!signal?.aborted) toast.error(getErrorMessage({ error, fallback: 'Entry save failed.' }));
     } finally {
       setMutating(false);
     }
@@ -424,9 +435,15 @@ export const EntryEditForm = ({ database, entry, record, onEntrySave }: EntryEdi
 
         <div className="flex items-center justify-between pt-2">
           <div className="flex items-center gap-2">
-            <EntryRemove database={database} entry={entry} record={record} onEntryRemove={handleSave} />
+            <EntryRemove database={database} entry={entry} record={record} signal={signal} onEntryRemove={handleSave} />
             {isInTrash && (
-              <EntryRestore database={database} entry={entry} record={record} onEntryRestore={handleSave} />
+              <EntryRestore
+                database={database}
+                entry={entry}
+                record={record}
+                signal={signal}
+                onEntryRestore={handleSave}
+              />
             )}
           </div>
           <Button className="h-8 px-4 text-xs" disabled={!isDirty || isMutating} type="submit" variant="outline">
