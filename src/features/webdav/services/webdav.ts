@@ -1,20 +1,21 @@
 import type kdbx from '@/utils/kdbxweb';
-import { isSameBytes } from '@/utils/buffer';
 import {
   createRecord,
-  updateRecord,
   getRecord,
   getRecords,
   type PersistedFileRecord,
   type WebDavFileRecord,
+  isModified,
 } from '@/repositories/record';
 import { insertWebDavRecord } from '@/features/webdav/repositories/record';
 import {
-  createWebDavConnection,
-  validateWebDavSetup,
-  WebDavError,
+  readWebDav,
+  statWebDav,
+  writeWebDav,
+  webdavConnectionSchema,
   type WebDavSetup,
 } from '@/features/webdav/repositories/webdav';
+import type { Sync } from '@/services/provider';
 import { createEmptyDatabase, toEncryptedBytes, unlockDatabase, loadDatabase } from '@/services/database';
 import { validateNewDatabaseInput, toKey } from '@/services/record';
 
@@ -50,34 +51,30 @@ export const importWebDavRecord = async ({
   databasePassword: string;
   keyFile?: FileList;
 }) => {
-  const setup = validateWebDavSetup(input);
-  const connection = createWebDavConnection(setup);
-  try {
-    const { bytes } = await connection.read();
-    const key = await toKey(keyFile);
-    const database = await unlockDatabase({
-      encryptedBytes: bytes,
-      password: databasePassword,
-      keyFileHashBase64: key?.hash,
-    });
-    const credentials = await encryptConnection(setup, database);
-    return await insertWebDavRecord(
-      {
-        id: crypto.randomUUID(),
-        type: 'webdav',
-        source: { url: setup.url },
-        key,
-        kdbx: {
-          name: decodeURIComponent(new URL(setup.url).pathname.split('/').at(-1) || 'webdav.kdbx'),
-          encryptedBytes: bytes,
-        },
-        synchronization: { generation: 0, pending: false },
+  const setup = webdavConnectionSchema.parse(input);
+  const { bytes, etag } = await readWebDav(setup);
+  const key = await toKey(keyFile);
+  const database = await unlockDatabase({
+    encryptedBytes: bytes,
+    password: databasePassword,
+    keyFileHashBase64: key?.hash,
+  });
+  const credentials = await encryptConnection(setup, database);
+  return await insertWebDavRecord(
+    {
+      id: crypto.randomUUID(),
+      type: 'webdav',
+      source: { url: setup.url, etag },
+      key,
+      kdbx: {
+        name: decodeURIComponent(new URL(setup.url).pathname.split('/').at(-1) || 'webdav.kdbx'),
+        encryptedBytes: bytes,
       },
-      credentials,
-    );
-  } finally {
-    connection.dispose();
-  }
+      version: 0,
+      syncedVersion: 0,
+    },
+    credentials,
+  );
 };
 
 export type WebDavCreationResult = {
@@ -96,7 +93,7 @@ export const createWebDavRecord = async ({
   useKeyFile?: boolean;
   setupInput: WebDavSetup;
 }): Promise<WebDavCreationResult> => {
-  const setup = validateWebDavSetup(setupInput);
+  const setup = webdavConnectionSchema.parse(setupInput);
   const { name, kdbxFileName } = validateNewDatabaseInput(databaseName, password);
   const { encryptedBytes, generatedKey } = await createEmptyDatabase({ name, password, useKeyFile });
   const records = await getRecords();
@@ -111,7 +108,6 @@ export const createWebDavRecord = async ({
     key: generatedKey?.key,
   });
   const generatedKeyFile = generatedKey ? { bytes: generatedKey.keyFileBytes, name: generatedKey.key.name } : undefined;
-  const connection = createWebDavConnection(setup);
   try {
     const database = await unlockDatabase({
       encryptedBytes,
@@ -119,14 +115,15 @@ export const createWebDavRecord = async ({
       keyFileHashBase64: generatedKey?.key.hash,
     });
     const credentials = await encryptConnection(setup, database);
-    await connection.write(encryptedBytes, undefined, true);
+    const etag = await writeWebDav({ setup, bytes: encryptedBytes, create: true });
     const record = await insertWebDavRecord(
       {
         ...recovery,
         type: 'webdav',
         kdbx: { ...recovery.kdbx, name: kdbxFileName },
-        source: { url: setup.url },
-        synchronization: { generation: 0, pending: false },
+        source: { url: setup.url, etag },
+        version: 0,
+        syncedVersion: 0,
       },
       credentials,
       encryptedBytes,
@@ -146,44 +143,22 @@ export const createWebDavRecord = async ({
         { cause },
       ),
     };
-  } finally {
-    connection.dispose();
   }
 };
 
-const snapshots = new WeakMap<WebDavFileRecord, { bytes: Uint8Array; etag?: string; credentials: kdbx.Credentials }>();
-const uploaded = new WeakMap<WebDavFileRecord, Uint8Array>();
-
-export const saveWebDav = async (record: WebDavFileRecord, database: kdbx.Kdbx, signal?: AbortSignal) => {
-  signal?.throwIfAborted();
-  const confirmedBytes = uploaded.get(record);
-  const bytes = confirmedBytes ?? (await toEncryptedBytes(database));
-  const nextRecord = await updateRecord(record.id, (current) => {
-    signal?.throwIfAborted();
-    if (current.type !== 'webdav' || current.synchronization.generation !== record.synchronization.generation) {
-      throw new Error('The saved database changed or was removed. Download your edits before reopening.');
-    }
-    return {
-      ...current,
-      kdbx: { ...current.kdbx, encryptedBytes: bytes.slice() },
-      synchronization: {
-        generation:
-          current.synchronization.generation +
-          (!confirmedBytes || !isSameBytes(current.kdbx.encryptedBytes, bytes) ? 1 : 0),
-        pending: !confirmedBytes,
-      },
-    };
-  });
-  if (nextRecord.type !== 'webdav') throw new Error('WebDAV database not found.');
-  uploaded.delete(record);
-  return nextRecord;
-};
-
-const connectWebDav = async (record: WebDavFileRecord, credentials: kdbx.Credentials) => {
+export const createWebDavSync = async ({
+  record,
+  database,
+}: {
+  record: WebDavFileRecord;
+  database: kdbx.Kdbx;
+}): Promise<Sync<WebDavFileRecord, string | undefined>> => {
   const kdbx = (await import('@/utils/kdbxweb')).default;
   const container = await loadDatabase({
     encryptedBytes: record.source.credentials,
-    credentials,
+    credentials: database.credentials,
+  }).catch((cause: unknown) => {
+    throw new Error('Saved WebDAV credentials could not be unlocked. Download and reimport to reconnect.', { cause });
   });
   const entry = container.getDefaultGroup().entries[0];
   const username = entry?.fields.get('Username');
@@ -191,103 +166,87 @@ const connectWebDav = async (record: WebDavFileRecord, credentials: kdbx.Credent
   if (!(username instanceof kdbx.ProtectedValue) || !(password instanceof kdbx.ProtectedValue)) {
     throw new Error('Saved WebDAV credentials are invalid. Download and reimport to reconnect.');
   }
-  return createWebDavConnection({ url: record.source.url, username: username.getText(), password: password.getText() });
-};
-
-export const loadWebDavDatabase = async ({ database, record }: { database: kdbx.Kdbx; record: WebDavFileRecord }) => {
-  const current = await getRecord(record.id);
-  if (current.type !== 'webdav' || current.synchronization.generation !== record.synchronization.generation) {
-    throw new Error('The saved database changed or was removed. Download your edits before reopening.');
-  }
-  return loadDatabase({
-    encryptedBytes: current.kdbx.encryptedBytes,
-    credentials: database.credentials,
-  });
-};
-
-export const pullWebDav = async (record: WebDavFileRecord, database: kdbx.Kdbx) => {
-  const connection = await connectWebDav(record, database.credentials);
-  try {
-    const snapshot = await connection.read();
-    const candidate = await loadWebDavDatabase({ record, database });
-    const remote = await loadDatabase({ encryptedBytes: snapshot.bytes, credentials: database.credentials });
-    if (!candidate.getDefaultGroup().uuid.equals(remote.getDefaultGroup().uuid)) {
-      throw new Error('The WebDAV file is a different database. The local cache has been kept.');
-    }
-    if (record.synchronization.pending) {
-      // KDBX drops milliseconds. kdbxweb identifies current and historical versions by
-      // timestamp; refuse collisions that could discard remote content.
-      const kdbx = (await import('@/utils/kdbxweb')).default;
-      const entryContent = (version: kdbx.KdbxEntry) =>
-        JSON.stringify(
-          {
-            fields: new Map(
-              [...version.fields].map(([name, value]) => [name, typeof value === 'string' ? value : value.getText()]),
-            ),
-            binaries: new Map(
-              [...version.binaries].map(([name, value]) => [name, 'hash' in value ? value.hash : value]),
-            ),
-            tags: version.tags.toSorted(),
-            icon: version.icon,
-            customIcon: version.customIcon,
-            fgColor: version.fgColor,
-            bgColor: version.bgColor,
-            overrideUrl: version.overrideUrl,
-            autoType: version.autoType,
-            customData: version.customData,
-            qualityCheck: version.qualityCheck,
-            expires: !!version.times.expires,
-            expiryTime: version.times.expires ? version.times.expiryTime : undefined,
-          },
-          (_key, value: unknown) => {
-            if (value instanceof kdbx.ProtectedValue) return value.toBase64();
-            if (value instanceof kdbx.KdbxUuid) return value.id;
-            if (value instanceof Map)
-              return [...value.entries()].sort(([left], [right]) => String(left).localeCompare(String(right)));
-            if (value instanceof ArrayBuffer || value instanceof Uint8Array) return kdbx.ByteUtils.bytesToBase64(value);
-            return value;
-          },
+  const setup = { url: record.source.url, username: username.getText(), password: password.getText() };
+  const load = (bytes: Uint8Array) => loadDatabase({ encryptedBytes: bytes, credentials: database.credentials });
+  return {
+    check: async ({ source }) => {
+      const etag = await statWebDav(setup);
+      return { data: etag, isRemoteChanged: !etag || etag !== source.etag };
+    },
+    pull: async (record, etag) => {
+      const snapshot = await readWebDav(setup, etag);
+      const candidate = await load(record.kdbx.encryptedBytes);
+      const remote = await load(snapshot.bytes).catch((cause: unknown) => {
+        throw new Error(
+          'The remote WebDAV database could not be unlocked. Download your local database and reimport with its current password and key file.',
+          { cause },
         );
-      const remoteEntries = new Map([...remote.getDefaultGroup().allEntries()].map((entry) => [entry.uuid.id, entry]));
-      for (const entry of candidate.getDefaultGroup().allEntries()) {
-        const remoteEntry = remoteEntries.get(entry.uuid.id);
-        if (!remoteEntry) continue;
-        const localVersions = [entry, ...entry.history].map((version) => ({
-          time: version.lastModTime,
-          content: entryContent(version),
-        }));
-        for (const version of [remoteEntry, ...remoteEntry.history]) {
-          const remoteContent = entryContent(version);
-          if (
-            localVersions.some((local) => local.time === version.lastModTime && local.content !== remoteContent) &&
-            !localVersions.some((local) => local.content === remoteContent)
-          ) {
-            throw new WebDavError(
-              'entry-conflict',
-              'Conflicting entry changes have the same timestamp. Download your local database and resolve the conflict before retrying.',
-            );
+      });
+      if (!candidate.getDefaultGroup().uuid.equals(remote.getDefaultGroup().uuid)) {
+        throw new Error('The WebDAV file is a different database. The local cache has been kept.');
+      }
+      if (isModified(record)) {
+        // KDBX drops milliseconds. kdbxweb identifies current and historical versions by
+        // timestamp; refuse collisions that could discard remote content.
+        const entryContent = (version: kdbx.KdbxEntry) =>
+          JSON.stringify(
+            {
+              fields: new Map(
+                [...version.fields].map(([name, value]) => [name, typeof value === 'string' ? value : value.getText()]),
+              ),
+              binaries: new Map(
+                [...version.binaries].map(([name, value]) => [name, 'hash' in value ? value.hash : value]),
+              ),
+              tags: version.tags.toSorted(),
+              icon: version.icon,
+              customIcon: version.customIcon,
+              fgColor: version.fgColor,
+              bgColor: version.bgColor,
+              overrideUrl: version.overrideUrl,
+              autoType: version.autoType,
+              customData: version.customData,
+              qualityCheck: version.qualityCheck,
+              expires: !!version.times.expires,
+              expiryTime: version.times.expires ? version.times.expiryTime : undefined,
+            },
+            (_key, value: unknown) => {
+              if (value instanceof kdbx.ProtectedValue) return value.toBase64();
+              if (value instanceof kdbx.KdbxUuid) return value.id;
+              if (value instanceof Map)
+                return [...value.entries()].sort(([left], [right]) => String(left).localeCompare(String(right)));
+              if (value instanceof ArrayBuffer || value instanceof Uint8Array)
+                return kdbx.ByteUtils.bytesToBase64(value);
+              return value;
+            },
+          );
+        const remoteEntries = new Map(
+          [...remote.getDefaultGroup().allEntries()].map((entry) => [entry.uuid.id, entry]),
+        );
+        for (const entry of candidate.getDefaultGroup().allEntries()) {
+          const remoteEntry = remoteEntries.get(entry.uuid.id);
+          if (!remoteEntry) continue;
+          const localVersions = [entry, ...entry.history].map((version) => ({
+            time: version.lastModTime,
+            content: entryContent(version),
+          }));
+          for (const version of [remoteEntry, ...remoteEntry.history]) {
+            const remoteContent = entryContent(version);
+            if (
+              localVersions.some((local) => local.time === version.lastModTime && local.content !== remoteContent) &&
+              !localVersions.some((local) => local.content === remoteContent)
+            ) {
+              throw new Error(
+                'Conflicting entry changes have the same timestamp. Download your local database and resolve the conflict before retrying.',
+              );
+            }
           }
         }
       }
-    }
-    snapshots.set(record, { ...snapshot, credentials: database.credentials });
-    return snapshot.bytes;
-  } finally {
-    connection.dispose();
-  }
-};
-
-export const pushWebDav = async ({ record, bytes }: { record: WebDavFileRecord; bytes: Uint8Array }) => {
-  const snapshot = snapshots.get(record);
-  if (!snapshot) throw new Error('Read the WebDAV file before uploading changes.');
-  snapshots.delete(record);
-  if (record.synchronization.pending && !isSameBytes(record.kdbx.encryptedBytes, snapshot.bytes)) {
-    const connection = await connectWebDav(record, snapshot.credentials);
-    try {
-      await connection.write(bytes, snapshot.etag);
-    } finally {
-      connection.dispose();
-    }
-  }
-  uploaded.set(record, bytes);
+      return { bytes: snapshot.bytes, source: { ...record.source, etag: snapshot.etag } };
+    },
+    push: async ({ source }, bytes, etag) => ({
+      ...source,
+      etag: await writeWebDav({ setup, bytes, etag }),
+    }),
+  };
 };

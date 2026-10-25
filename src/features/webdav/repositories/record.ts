@@ -5,7 +5,7 @@ import { Lock } from '@/utils/lock';
 const insertLock = new Lock('webdav.repository.insert');
 
 export const insertWebDavRecord = async (
-  record: Omit<WebDavFileRecord, 'source'> & { source: { url: string } },
+  record: Omit<WebDavFileRecord, 'source'> & { source: Omit<WebDavFileRecord['source'], 'credentials'> },
   credentials: Uint8Array,
   recoveryBytes?: Uint8Array,
 ) =>

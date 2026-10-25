@@ -8,7 +8,7 @@ import {
 } from '@/repositories/record';
 import { loadDatabase, toEncryptedBytes } from '@/services/database';
 import { getProvider } from '@/services/provider-registry';
-import { SyncConflictError } from '@/services/provider';
+import { SyncConflictError, type Sync } from '@/services/provider';
 import { isSameBytes } from '@/utils/buffer';
 import { Lock } from '@/utils/lock';
 
@@ -27,9 +27,7 @@ export const updateRecordDatabase = async <Result>({
     const { storage } = getProvider(record);
     const nextDatabase = await storage.load({ database, record });
     const result = await update(nextDatabase);
-    const nextRecord = storage.save
-      ? await storage.save({ database: nextDatabase, record })
-      : await storage.update(record, { encryptedBytes: await toEncryptedBytes(nextDatabase) });
+    const nextRecord = await storage.update(record, { encryptedBytes: await toEncryptedBytes(nextDatabase) });
 
     return [nextDatabase, nextRecord, result];
   });
@@ -52,30 +50,19 @@ const MAX_SYNC_ATTEMPTS = 3;
 export const syncSession = async ({
   record,
   database,
+  sync: preparedSync,
 }: {
   record: FileRecord;
   database: kdbxweb.Kdbx;
+  sync?: Sync<FileRecord, unknown> | Error;
 }): Promise<SyncSessionResult> => {
-  const { sync, label } = getProvider(record);
+  const provider = getProvider(record);
+  const configuredSync = preparedSync ?? provider.sync;
+  if (configuredSync instanceof Error) throw configuredSync;
+  const sync = typeof configuredSync === 'function' ? await configuredSync({ record, database }) : configuredSync;
+  const { label } = provider;
   if (!sync) {
     throw new Error(`${label} does not support sync.`);
-  }
-
-  if (sync.legacy) {
-    return syncSessionLock.runInLock(async () => {
-      const remoteBytes = await sync.pull(record, database);
-      const [nextDatabase, nextRecord] = await updateRecordDatabase({
-        database,
-        record,
-        update: async (updatedDatabase) => {
-          updatedDatabase.merge(
-            await loadDatabase({ encryptedBytes: remoteBytes, credentials: updatedDatabase.credentials }),
-          );
-          await sync.push(record, await toEncryptedBytes(updatedDatabase));
-        },
-      });
-      return { database: nextDatabase, record: nextRecord };
-    });
   }
 
   const load = (encryptedBytes: Uint8Array) => loadDatabase({ encryptedBytes, credentials: database.credentials });
@@ -117,12 +104,16 @@ export const syncSession = async ({
         ? synced.encryptedBytes
         : await toEncryptedBytes(await merge(stored.kdbx.encryptedBytes, synced.encryptedBytes));
 
-      const nextRecord = await updateSyncableRecord(stored.id, (current) => ({
-        ...current,
-        kdbx: { ...current.kdbx, encryptedBytes },
-        source: synced.source,
-        syncedVersion: snapshot.version ?? 0,
-      }));
+      const nextRecord = await updateSyncableRecord(stored.id, (current) => {
+        const next = {
+          ...current,
+          kdbx: { ...current.kdbx, encryptedBytes },
+          syncedVersion: snapshot.version ?? 0,
+        };
+        if (next.type === 'webdav' && 'url' in synced.source) return { ...next, source: synced.source };
+        if (next.type === 'google-drive' && 'id' in synced.source) return { ...next, source: synced.source };
+        throw new Error('The provider returned an invalid sync source.');
+      });
 
       return { database: await load(encryptedBytes), record: nextRecord };
     });

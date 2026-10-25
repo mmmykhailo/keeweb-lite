@@ -13,16 +13,21 @@ type State = {
   error?: Error;
 };
 
-export const useSync = ({ record, database, version, setSession }: UseSyncProps) => {
+export const useSync = ({ record, database, version, sync: sessionSync, setSession }: UseSyncProps) => {
   const lastCallId = useRef(0);
   const isMounted = useMountedState();
   const [state, set] = useState<State>({ loading: false });
 
   const sync = useCoalesce(async () => {
-    const syncedSession = await syncSession({ record, database });
+    const syncedSession = await syncSession({ record, database, sync: sessionSync });
 
     setSession((previousSession) => {
-      if (!previousSession) {
+      if (
+        !previousSession ||
+        !isMounted() ||
+        previousSession.record.id !== record.id ||
+        previousSession.database.credentials !== database.credentials
+      ) {
         return previousSession;
       }
 
@@ -31,6 +36,7 @@ export const useSync = ({ record, database, version, setSession }: UseSyncProps)
       }
 
       return {
+        ...previousSession,
         ...syncedSession,
         version,
       };

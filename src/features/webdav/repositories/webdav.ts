@@ -1,5 +1,6 @@
 import * as z from 'zod/mini';
 import { isSameBytes } from '@/utils/buffer';
+import { SyncConflictError } from '@/services/provider';
 
 const fileUrlSchema = z.url({ protocol: /^https$/, normalize: true }).check(
   z.refine((value) => {
@@ -44,115 +45,91 @@ const strongEtag = (value: string | null) => {
   return value;
 };
 
-export class WebDavError extends Error {
-  constructor(
-    public code: string,
-    message: string,
-    options?: ErrorOptions,
-  ) {
-    super(message, options);
-  }
-}
-
 const errorForStatus = (status: number) => {
-  if (status === 401) return new WebDavError('authentication', 'WebDAV rejected these connection credentials.');
-  if (status === 403)
-    return new WebDavError('permission', 'The WebDAV account does not have permission for this file.');
-  if (status === 404 || status === 410)
-    return new WebDavError('missing-resource', 'The WebDAV file could not be found.');
-  if (status === 412)
-    return new WebDavError('precondition', 'The WebDAV file changed before this update could be applied.');
-  if (status === 423) return new WebDavError('locked-resource', 'The WebDAV file is locked on the server.');
-  if (status === 507) return new WebDavError('capacity', 'The WebDAV server does not have enough storage space.');
-  if (status === 405 || status === 501)
-    return new WebDavError('unsupported', 'The WebDAV server does not support this operation.');
-  if (status === 409) return new WebDavError('remote-conflict', 'The WebDAV destination collection is unavailable.');
-  return new WebDavError('network', `WebDAV request failed with HTTP ${status}.`);
+  if (status === 401) return new Error('WebDAV rejected these connection credentials.');
+  if (status === 403) return new Error('The WebDAV account does not have permission for this file.');
+  if (status === 404 || status === 410) return new Error('The WebDAV file could not be found.');
+  if (status === 412) return new SyncConflictError();
+  if (status === 423) return new Error('The WebDAV file is locked on the server.');
+  if (status === 507) return new Error('The WebDAV server does not have enough storage space.');
+  if (status === 405 || status === 501) return new Error('The WebDAV server does not support this operation.');
+  if (status === 409) return new Error('The WebDAV destination collection is unavailable.');
+  return new Error(`WebDAV request failed with HTTP ${status}.`);
 };
 
 export type WebDavSetup = z.infer<typeof webdavConnectionSchema>;
-export const validateWebDavSetup = (input: WebDavSetup) => {
-  return webdavConnectionSchema.parse(input);
+
+const request = async (setup: WebDavSetup, options: RequestInit) => {
+  const { url, username, password } = webdavConnectionSchema.parse(setup);
+  const kdbx = (await import('@/utils/kdbxweb')).default;
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...options,
+      mode: 'cors',
+      credentials: 'omit',
+      cache: 'no-store',
+      redirect: 'error',
+      headers: {
+        Authorization: `Basic ${kdbx.ByteUtils.bytesToBase64(kdbx.ByteUtils.stringToBytes(`${username}:${password}`))}`,
+        ...Object.fromEntries(new Headers(options.headers)),
+      },
+    });
+  } catch (cause) {
+    throw new Error('The browser could not access this WebDAV endpoint. Check its HTTPS and browser access settings.', {
+      cause,
+    });
+  }
+  if (!response.ok) throw errorForStatus(response.status);
+  return response;
 };
 
-export const createWebDavConnection = (input: WebDavSetup) => {
-  const { url, username, password } = validateWebDavSetup(input);
-  let authorization: string | undefined = `Basic ${btoa(
-    Array.from(new TextEncoder().encode(`${username}:${password}`), (byte) => String.fromCharCode(byte)).join(''),
-  )}`;
-  const controller = new AbortController();
-  const request = async (options: RequestInit) => {
-    try {
-      controller.signal.throwIfAborted();
-      if (!authorization) throw new DOMException('WebDAV connection locked.', 'AbortError');
-      const response = await fetch(url, {
-        ...options,
-        mode: 'cors',
-        credentials: 'omit',
-        cache: 'no-store',
-        redirect: 'error',
-        headers: { Authorization: authorization, ...Object.fromEntries(new Headers(options.headers)) },
-        signal: AbortSignal.any([options.signal ?? controller.signal, controller.signal]),
-      });
-      if (!response.ok) throw errorForStatus(response.status);
-      return response;
-    } catch (error) {
-      if (error instanceof WebDavError || (error instanceof DOMException && error.name === 'AbortError')) throw error;
-      throw new WebDavError(
-        'network',
-        'The browser could not access this WebDAV endpoint. Check its HTTPS and browser access settings.',
-        { cause: error },
-      );
-    }
-  };
-  const read = async (signal: AbortSignal = controller.signal) => {
-    const response = await request({ method: 'GET', signal });
-    try {
-      return {
-        bytes: new Uint8Array(await response.arrayBuffer()),
-        etag: strongEtag(response.headers.get('ETag')),
-      };
-    } catch (error) {
-      if (error instanceof DOMException && error.name === 'AbortError') throw error;
-      throw new WebDavError('network', 'The WebDAV response could not be read completely.', { cause: error });
-    }
-  };
-  return {
-    signal: controller.signal,
-    dispose: () => {
-      authorization = undefined;
-      controller.abort();
-    },
-    read,
-    write: async (
-      bytes: Uint8Array,
-      etag: string | undefined,
-      create = false,
-      signal: AbortSignal = controller.signal,
-    ) => {
-      const validator = create ? '*' : strongEtag(etag ?? null);
-      controller.signal.throwIfAborted();
-      if (!validator) {
-        throw new WebDavError('unsupported', 'This WebDAV server did not provide a strong ETag. Updates are disabled.');
-      }
-      const response = await request({
-        method: 'PUT',
-        signal,
-        body: bytes.slice().buffer,
-        headers: { 'Content-Type': 'application/octet-stream', [create ? 'If-None-Match' : 'If-Match']: validator },
-      });
-      if (!strongEtag(response.headers.get('ETag'))) {
-        const snapshot = await read(signal);
-        if (!snapshot.etag || !isSameBytes(snapshot.bytes, bytes)) {
-          throw new WebDavError(
-            'unconfirmed',
-            'The WebDAV upload could not be confirmed. Check the destination before retrying.',
-          );
-        }
-      }
-      signal.throwIfAborted();
-      controller.signal.throwIfAborted();
-    },
-  };
+export const statWebDav = async (setup: WebDavSetup) => {
+  const response = await request(setup, { method: 'HEAD' });
+  return strongEtag(response.headers.get('ETag'));
 };
-export type WebDavConnection = ReturnType<typeof createWebDavConnection>;
+
+export const readWebDav = async (setup: WebDavSetup, etag?: string) => {
+  const response = await request(setup, { method: 'GET', headers: etag ? { 'If-Match': etag } : {} });
+  const currentEtag = strongEtag(response.headers.get('ETag'));
+  if (etag && currentEtag !== etag) throw new SyncConflictError();
+  try {
+    return { bytes: new Uint8Array(await response.arrayBuffer()), etag: currentEtag };
+  } catch (cause) {
+    throw new Error('The WebDAV response could not be read completely.', { cause });
+  }
+};
+
+export const writeWebDav = async ({
+  setup,
+  bytes,
+  etag,
+  create = false,
+}: {
+  setup: WebDavSetup;
+  bytes: Uint8Array;
+  etag?: string;
+  create?: boolean;
+}) => {
+  const validator = create ? '*' : strongEtag(etag ?? null);
+  if (!validator) throw new Error('This WebDAV server did not provide a strong ETag. Updates are disabled.');
+  let response: Response;
+  try {
+    response = await request(setup, {
+      method: 'PUT',
+      body: bytes.slice().buffer,
+      headers: { 'Content-Type': 'application/octet-stream', [create ? 'If-None-Match' : 'If-Match']: validator },
+    });
+  } catch (error) {
+    if (create && error instanceof SyncConflictError)
+      throw new Error('A WebDAV file already exists at this URL.', { cause: error });
+    throw error;
+  }
+  const nextEtag = strongEtag(response.headers.get('ETag'));
+  if (nextEtag) return nextEtag;
+  const snapshot = await readWebDav(setup);
+  if (!snapshot.etag || !isSameBytes(snapshot.bytes, bytes)) {
+    throw new Error('The WebDAV upload could not be confirmed. Check the destination before retrying.');
+  }
+  return snapshot.etag;
+};
