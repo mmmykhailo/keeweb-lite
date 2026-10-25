@@ -1,10 +1,7 @@
 import type kdbxweb from '@/utils/kdbxweb';
 import { asArrayBuffer, asUint8Array } from '@/utils/buffer';
 import { Lock } from '@/utils/lock';
-
-// kdbxweb, xmldom and argon2 are about 245 KB, so they load on first use instead of with the unlock page.
-// import() is cached per module, so calling this again reuses the loaded module.
-const loadKdbxweb = async () => (await import('@/utils/kdbxweb')).default;
+import { loadKdbxweb } from '@/utils/load-kdbxweb';
 
 export const toKeyFileHash = async (file: File) => {
   const kdbxweb = await loadKdbxweb();

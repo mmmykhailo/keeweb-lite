@@ -1,4 +1,5 @@
 import type kdbx from '@/utils/kdbxweb';
+import { loadKdbxweb } from '@/utils/load-kdbxweb';
 import {
   createRecord,
   getRecord,
@@ -20,7 +21,7 @@ import { createEmptyDatabase, toEncryptedBytes, unlockDatabase, loadDatabase } f
 import { validateNewDatabaseInput, toKey } from '@/services/record';
 
 const encryptConnection = async (setup: WebDavSetup, database: kdbx.Kdbx) => {
-  const kdbx = (await import('@/utils/kdbxweb')).default;
+  const kdbx = await loadKdbxweb();
   const container = kdbx.Kdbx.create(database.credentials, 'WebDAV connection');
   if (database.versionMajor < 4) {
     const rounds = database.header.keyEncryptionRounds;
@@ -153,7 +154,7 @@ export const createWebDavSync = async ({
   record: WebDavFileRecord;
   database: kdbx.Kdbx;
 }): Promise<Sync<WebDavFileRecord, string | undefined>> => {
-  const kdbx = (await import('@/utils/kdbxweb')).default;
+  const kdbx = await loadKdbxweb();
   const container = await loadDatabase({
     encryptedBytes: record.source.credentials,
     credentials: database.credentials,
