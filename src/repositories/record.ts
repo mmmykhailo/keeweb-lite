@@ -41,11 +41,9 @@ const googleDriveFileRecordSchema = z.object({
 const webDavFileRecordSchema = z.object({
   ...localFileRecordSchema.shape,
   type: z.literal('webdav'),
-  source: z.object({ url: z.url(), credentials: z.instanceof(Uint8Array) }),
-  synchronization: z.object({
-    generation: z.int().check(z.minimum(0)),
-    pending: z.boolean(),
-  }),
+  source: z.object({ url: z.url(), credentials: z.instanceof(Uint8Array), etag: z.optional(z.string()) }),
+  version: z.optional(z.number()),
+  syncedVersion: z.optional(z.number()),
 });
 export type WebDavFileRecord = z.infer<typeof webDavFileRecordSchema>;
 const fileRecordSchema = z.discriminatedUnion('type', [
@@ -94,9 +92,9 @@ export const getRecords = async () => {
   return lock.runInLock(readRecords);
 };
 
-export type SyncableRecord = Extract<PersistedFileRecord, { type: 'google-drive' }>;
+export type SyncableRecord = Extract<PersistedFileRecord, { source: unknown }>;
 
-const isSyncable = (record: PersistedFileRecord): record is SyncableRecord => record.type === 'google-drive';
+const isSyncable = (record: PersistedFileRecord): record is SyncableRecord => 'source' in record;
 
 // `version` counts the local saves and `syncedVersion` is the version that was last synced,
 // a record that was never synced has no `syncedVersion`

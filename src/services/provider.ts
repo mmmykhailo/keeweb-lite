@@ -1,6 +1,6 @@
 import type kdbxweb from '@/utils/kdbxweb';
 import type { ComponentType } from 'react';
-import { getRecord, markSaved, updateRecord, type FileRecord, type SyncableRecord } from '@/repositories/record';
+import { getRecord, markSaved, updateRecord, type FileRecord } from '@/repositories/record';
 import { loadDatabase } from '@/services/database';
 import { kebabCaseToTitle } from '@/utils/string';
 
@@ -12,7 +12,6 @@ export type DialogProps = {
 
 export type RecordStorage = {
   load: (input: { database: kdbxweb.Kdbx; record: FileRecord }) => Promise<kdbxweb.Kdbx>;
-  save?: (input: { database: kdbxweb.Kdbx; record: FileRecord }) => Promise<FileRecord>;
   update: (record: FileRecord, changes: { encryptedBytes: Uint8Array<ArrayBuffer> }) => Promise<FileRecord>;
 };
 
@@ -46,25 +45,14 @@ export class SyncConflictError extends Error {
 // `push` returns the new `source` of the record, which is saved with the pushed bytes.
 // Whether the local copy changed since the last sync is tracked by `version` and `syncedVersion` on the record.
 export type Sync<Record extends FileRecord = FileRecord, SyncData = undefined> = {
-  legacy?: false;
-  check?: (record: Record) => Promise<{ data: SyncData; isRemoteChanged: boolean }>;
-  pull(
-    record: Record,
-    data: SyncData,
-  ): Promise<{ bytes: Uint8Array<ArrayBuffer>; source: SourceOf<Extract<Record, SyncableRecord>> }>;
+  check?(record: Record): Promise<{ data: SyncData; isRemoteChanged: boolean }>;
+  pull(record: Record, data: SyncData): Promise<{ bytes: Uint8Array<ArrayBuffer>; source: SourceOf<Record> }>;
   // must throw SyncConflictError if the remote changed since `check` returned `data`
-  push(
-    record: Record,
-    bytes: Uint8Array<ArrayBuffer>,
-    data: SyncData,
-  ): Promise<SourceOf<Extract<Record, SyncableRecord>>>;
+  push(record: Record, bytes: Uint8Array<ArrayBuffer>, data: SyncData): Promise<SourceOf<Record>>;
 };
 
-export type LegacySync<Record extends FileRecord = FileRecord> = {
-  legacy: true;
-  pull: (record: Record, database: kdbxweb.Kdbx) => Promise<Uint8Array>;
-  push: (record: Record, bytes: Uint8Array<ArrayBuffer>) => Promise<unknown>;
-};
+type ProviderSync<Record extends FileRecord, SyncData> =
+  Sync<Record, SyncData> | ((input: { record: Record; database: kdbxweb.Kdbx }) => Promise<Sync<Record, SyncData>>);
 
 export type Provider<Type extends FileRecord['type'] = FileRecord['type']> = {
   type: Type;
@@ -72,14 +60,14 @@ export type Provider<Type extends FileRecord['type'] = FileRecord['type']> = {
   isConfigured: () => boolean;
   scripts?: string[];
   storage: RecordStorage;
-  sync?: Sync<RecordOf<Type>, unknown> | LegacySync<RecordOf<Type>>;
+  sync?: ProviderSync<RecordOf<Type>, unknown>;
   ImportDialog?: ComponentType<DialogProps>;
   CreateDialog?: ComponentType<DialogProps>;
 };
 
 type ProviderConfig<Type extends FileRecord['type'], SyncData> = Pick<Provider<Type>, 'type'> &
   Partial<Omit<Provider<Type>, 'type' | 'sync'>> & {
-    sync?: Sync<RecordOf<Type>, SyncData> | LegacySync<RecordOf<Type>>;
+    sync?: ProviderSync<RecordOf<Type>, SyncData>;
   };
 
 export const defineProvider = <Type extends FileRecord['type'], SyncData = undefined>(

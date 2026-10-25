@@ -5,7 +5,7 @@ import { screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { WorkspacePage } from '@/features/workspace/pages/workspace';
 import { unlockSession, type UnlockSession } from '@/features/unlock/services/session';
-import { getRecord } from '@/repositories/record';
+import { getRecord, isModified } from '@/repositories/record';
 import { toEncryptedBytes, unlockDatabase } from '@/services/database';
 import { createTestDatabase, createTestEntry } from '@tests/utils/kdbx';
 import { render } from '@tests/utils/render';
@@ -18,7 +18,9 @@ const fixture = async () => {
   const db = await createTestDatabase();
   createTestEntry(db);
   const bytes = await toEncryptedBytes(db);
-  const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => response(bytes));
+  const fetch = vi
+    .fn<typeof globalThis.fetch>()
+    .mockImplementation(async () => new Response(bytes.slice().buffer, { headers: { ETag: '"imported"' } }));
   const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(fetch);
   const record = await webDavService.importWebDavRecord({ ...setup, databasePassword: password });
   const session = await unlockSession({ record, password });
@@ -45,7 +47,7 @@ describe('workspace sync', () => {
       render(<Harness initial={session} />);
       await waitFor(() => expect(screen.getByText('Synced')).toBeInTheDocument());
       expect(screen.getByRole('button', { name: /Remote entry/ })).toBeInTheDocument();
-      expect(fetch.mock.calls.map(([, options]) => options?.method)).toEqual(['GET']);
+      expect(fetch.mock.calls.map(([, options]) => options?.method)).toEqual(['HEAD', 'GET']);
 
       await user.click(screen.getByRole('button', { name: /Test Entry test-user/ }));
       await user.clear(screen.getByLabelText('Title'));
@@ -64,7 +66,7 @@ describe('workspace sync', () => {
       ]);
       const saved = await getRecord(record.id);
       expect(saved.kdbx.encryptedBytes).toEqual(uploadedBytes);
-      expect(saved.type === 'webdav' && saved.synchronization.pending).toBe(false);
+      expect(saved.type === 'webdav' && isModified(saved)).toBe(false);
     });
 
     it('keeps failed uploads locally and resumes only after an explicit retry', async () => {
@@ -81,13 +83,13 @@ describe('workspace sync', () => {
       await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled());
       expect(fetch).toHaveBeenCalledTimes(requests);
       const local = await getRecord(record.id);
-      expect(local.type === 'webdav' && local.synchronization.pending).toBe(true);
+      expect(local.type === 'webdav' && isModified(local)).toBe(true);
 
       fetch.mockImplementation(async () => response(bytes));
       await user.click(screen.getByRole('button', { name: 'Sync status: error' }));
       await waitFor(() => expect(screen.getByText('Synced')).toBeInTheDocument());
       const saved = await getRecord(record.id);
-      expect(saved.type === 'webdav' && saved.synchronization.pending).toBe(false);
+      expect(saved.type === 'webdav' && isModified(saved)).toBe(false);
       const db = await unlockDatabase({ encryptedBytes: saved.kdbx.encryptedBytes, password });
       expect(db.getDefaultGroup().entries[0].fields.get('Title')).toBe('Test Entry edited');
     });
