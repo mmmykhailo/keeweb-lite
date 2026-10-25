@@ -45,25 +45,21 @@ const encryptConnection = async (setup: WebDavSetup, database: kdbx.Kdbx) => {
 export const importWebDavRecord = async ({
   databasePassword,
   keyFile,
-  signal,
   ...input
 }: WebDavSetup & {
   databasePassword: string;
   keyFile?: FileList;
-  signal?: AbortSignal;
 }) => {
   const setup = validateWebDavSetup(input);
   const connection = createWebDavConnection(setup);
   try {
-    signal?.throwIfAborted();
-    const { bytes } = await connection.read(signal);
+    const { bytes } = await connection.read();
     const key = await toKey(keyFile);
     const database = await unlockDatabase({
       encryptedBytes: bytes,
       password: databasePassword,
       keyFileHashBase64: key?.hash,
     });
-    signal?.throwIfAborted();
     const credentials = await encryptConnection(setup, database);
     return await insertWebDavRecord(
       {
@@ -78,7 +74,6 @@ export const importWebDavRecord = async ({
         synchronization: { generation: 0, pending: false },
       },
       credentials,
-      signal,
     );
   } finally {
     connection.dispose();
@@ -95,25 +90,20 @@ export const createWebDavRecord = async ({
   password,
   useKeyFile,
   setupInput,
-  signal,
 }: {
   databaseName: string;
   password: string;
   useKeyFile?: boolean;
   setupInput: WebDavSetup;
-  signal?: AbortSignal;
 }): Promise<WebDavCreationResult> => {
   const setup = validateWebDavSetup(setupInput);
   const { name, kdbxFileName } = validateNewDatabaseInput(databaseName, password);
-  signal?.throwIfAborted();
   const { encryptedBytes, generatedKey } = await createEmptyDatabase({ name, password, useKeyFile });
-  signal?.throwIfAborted();
   const records = await getRecords();
   let recoveryName = kdbxFileName;
   while (records.some((row) => row.type === 'local' && row.kdbx.name === recoveryName)) {
     recoveryName = `${name}-recovery-${crypto.randomUUID()}.kdbx`;
   }
-  signal?.throwIfAborted();
   const recovery = await createRecord({
     id: crypto.randomUUID(),
     type: 'local',
@@ -123,16 +113,13 @@ export const createWebDavRecord = async ({
   const generatedKeyFile = generatedKey ? { bytes: generatedKey.keyFileBytes, name: generatedKey.key.name } : undefined;
   const connection = createWebDavConnection(setup);
   try {
-    signal?.throwIfAborted();
     const database = await unlockDatabase({
       encryptedBytes,
       password,
       keyFileHashBase64: generatedKey?.key.hash,
     });
-    signal?.throwIfAborted();
     const credentials = await encryptConnection(setup, database);
-    signal?.throwIfAborted();
-    await connection.write(encryptedBytes, undefined, true, signal);
+    await connection.write(encryptedBytes, undefined, true);
     const record = await insertWebDavRecord(
       {
         ...recovery,
@@ -142,7 +129,6 @@ export const createWebDavRecord = async ({
         synchronization: { generation: 0, pending: false },
       },
       credentials,
-      signal,
       encryptedBytes,
     );
     return { outcome: 'created', record, generatedKeyFile };
@@ -208,16 +194,7 @@ const connectWebDav = async (record: WebDavFileRecord, credentials: kdbx.Credent
   return createWebDavConnection({ url: record.source.url, username: username.getText(), password: password.getText() });
 };
 
-export const loadWebDavDatabase = async ({
-  database,
-  record,
-  signal,
-}: {
-  database: kdbx.Kdbx;
-  record: WebDavFileRecord;
-  signal?: AbortSignal;
-}) => {
-  signal?.throwIfAborted();
+export const loadWebDavDatabase = async ({ database, record }: { database: kdbx.Kdbx; record: WebDavFileRecord }) => {
   const current = await getRecord(record.id);
   if (current.type !== 'webdav' || current.synchronization.generation !== record.synchronization.generation) {
     throw new Error('The saved database changed or was removed. Download your edits before reopening.');

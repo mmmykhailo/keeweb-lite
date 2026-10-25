@@ -17,7 +17,6 @@ import { Input } from '@/components/ui/input';
 import { importWebDavRecord } from '@/features/webdav/services/webdav';
 import { getErrorMessage } from '@/utils/error';
 import { webdavConnectionSchema } from '@/features/webdav/repositories/webdav';
-import { useSetupOperation } from '@/features/webdav/hooks/use-setup-operation';
 import type { DialogProps } from '@/services/provider';
 
 const schema = z.object({
@@ -29,7 +28,6 @@ const schema = z.object({
 type FormValues = z.infer<typeof schema>;
 
 export const ImportWebDavDialog = ({ open, onOpenChange, onSuccess }: DialogProps) => {
-  const { abort, begin, finish } = useSetupOperation(open);
   const {
     control,
     formState: { isSubmitting },
@@ -41,28 +39,24 @@ export const ImportWebDavDialog = ({ open, onOpenChange, onSuccess }: DialogProp
   });
 
   const handleOpenChange = (nextOpen: boolean) => {
-    if (!nextOpen) abort();
-    onOpenChange(nextOpen);
+    if (!isSubmitting) onOpenChange(nextOpen);
   };
 
   const submit = handleSubmit(async ({ url, username, password, databasePassword, keyFile }) => {
-    const controller = begin();
     try {
-      await importWebDavRecord({ url, username, password, databasePassword, keyFile, signal: controller.signal });
+      await importWebDavRecord({ url, username, password, databasePassword, keyFile });
       onSuccess();
-      if (controller.signal.aborted) return;
-      handleOpenChange(false);
+      onOpenChange(false);
       toast.success('WebDAV database imported.');
     } catch (error) {
-      if (!controller.signal.aborted) toast.error(getErrorMessage({ error, fallback: 'WebDAV import failed.' }));
-    } finally {
-      finish(controller);
+      toast.error(getErrorMessage({ error, fallback: 'WebDAV import failed.' }));
     }
   });
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
+        showCloseButton={!isSubmitting}
         className="max-h-[calc(100dvh-2rem)] overflow-hidden sm:max-w-lg"
         onAnimationEnd={(event) => {
           if (event.currentTarget.dataset.state === 'closed') reset();
@@ -71,13 +65,16 @@ export const ImportWebDavDialog = ({ open, onOpenChange, onSuccess }: DialogProp
         <DialogHeader>
           <DialogTitle>Import WebDAV Database</DialogTitle>
           <DialogDescription>
-            Connect to a full HTTPS file URL. Connection details are saved in a separate encrypted local database.
+            Connect to a full HTTPS file URL. Connection details are stored encrypted on this device.
           </DialogDescription>
         </DialogHeader>
 
         <form
           className="max-h-[calc(100dvh-12rem)] space-y-3 overflow-y-auto pr-1"
-          onSubmit={(event) => void submit(event)}
+          onSubmit={(event) => {
+            if (isSubmitting) event.preventDefault();
+            else void submit(event);
+          }}
         >
           <Controller
             control={control}
