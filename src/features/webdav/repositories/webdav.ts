@@ -1,4 +1,5 @@
 import * as z from 'zod/mini';
+import { loadKdbxweb } from '@/utils/load-kdbxweb';
 import { isSameBytes } from '@/utils/buffer';
 import { SyncConflictError } from '@/services/provider';
 
@@ -61,7 +62,7 @@ export type WebDavSetup = z.infer<typeof webdavConnectionSchema>;
 
 const request = async (setup: WebDavSetup, options: RequestInit) => {
   const { url, username, password } = webdavConnectionSchema.parse(setup);
-  const kdbx = (await import('@/utils/kdbxweb')).default;
+  const kdbx = await loadKdbxweb();
   let response: Response;
   try {
     response = await fetch(url, {
