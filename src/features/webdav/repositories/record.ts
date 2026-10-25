@@ -1,8 +1,6 @@
+import { isSameBytes } from '@/utils/buffer';
 import { createRecord, getRecords, updateRecord, type WebDavFileRecord } from '@/repositories/record';
 import { Lock } from '@/utils/lock';
-
-export const equalBytes = (left: Uint8Array, right: Uint8Array) =>
-  left.length === right.length && left.every((byte, index) => byte === right[index]);
 
 const insertLock = new Lock('webdav.repository.insert');
 
@@ -27,7 +25,7 @@ export const insertWebDavRecord = async (
     }
     const updated = await updateRecord(record.id, (current) => {
       signal?.throwIfAborted();
-      if (current.type !== 'local' || !equalBytes(current.kdbx.encryptedBytes, recoveryBytes)) {
+      if (current.type !== 'local' || !isSameBytes(current.kdbx.encryptedBytes, recoveryBytes)) {
         throw new Error('The local recovery database changed or was removed.');
       }
       return nextRecord;

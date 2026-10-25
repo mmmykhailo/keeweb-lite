@@ -1,4 +1,5 @@
 import type kdbx from '@/utils/kdbxweb';
+import { isSameBytes } from '@/utils/buffer';
 import {
   createRecord,
   updateRecord,
@@ -7,7 +8,7 @@ import {
   type PersistedFileRecord,
   type WebDavFileRecord,
 } from '@/repositories/record';
-import { insertWebDavRecord, equalBytes } from '@/features/webdav/repositories/record';
+import { insertWebDavRecord } from '@/features/webdav/repositories/record';
 import {
   createWebDavConnection,
   validateWebDavSetup,
@@ -208,7 +209,7 @@ export const saveWebDav = async (record: WebDavFileRecord, database: kdbx.Kdbx, 
       synchronization: {
         generation:
           current.synchronization.generation +
-          (!confirmedBytes || !equalBytes(current.kdbx.encryptedBytes, bytes) ? 1 : 0),
+          (!confirmedBytes || !isSameBytes(current.kdbx.encryptedBytes, bytes) ? 1 : 0),
         pending: !confirmedBytes,
       },
     };
@@ -329,7 +330,7 @@ export const pushWebDav = async ({ record, bytes }: { record: WebDavFileRecord; 
   const snapshot = snapshots.get(record);
   if (!snapshot) throw new Error('Read the WebDAV file before uploading changes.');
   snapshots.delete(record);
-  if (record.synchronization.pending && !equalBytes(record.kdbx.encryptedBytes, snapshot.bytes)) {
+  if (record.synchronization.pending && !isSameBytes(record.kdbx.encryptedBytes, snapshot.bytes)) {
     const connection = await connectWebDav(record, snapshot.credentials);
     try {
       await connection.write(bytes, snapshot.etag);

@@ -1,57 +1,33 @@
 import * as z from 'zod/mini';
-import { equalBytes } from '@/features/webdav/repositories/record';
+import { isSameBytes } from '@/utils/buffer';
 
-export const canonicalFileUrl = (input: unknown) => {
-  const urlText = z.string().check(z.minLength(1)).parse(input);
-  let url: URL;
-  try {
-    url = new URL(urlText);
-  } catch (cause) {
-    throw new Error('Enter a full HTTPS WebDAV file URL.', { cause });
-  }
+const fileUrlSchema = z.url({ protocol: /^https$/, normalize: true }).check(
+  z.refine((value) => {
+    const url = URL.parse(value);
+    if (
+      !url ||
+      !url.hostname ||
+      url.username ||
+      url.password ||
+      value.includes('?') ||
+      value.includes('#') ||
+      url.pathname === '/' ||
+      url.pathname.endsWith('/')
+    )
+      return false;
+    try {
+      decodeURIComponent(url.pathname);
+      return true;
+    } catch {
+      return false;
+    }
+  }, 'Enter a full HTTPS file URL without credentials, query, fragment, or malformed percent escapes.'),
+);
 
-  if (
-    url.protocol !== 'https:' ||
-    !url.hostname ||
-    url.username ||
-    url.password ||
-    urlText.includes('?') ||
-    urlText.includes('#') ||
-    url.pathname === '/' ||
-    url.pathname.endsWith('/')
-  ) {
-    throw new Error('Enter a full HTTPS WebDAV file URL without embedded credentials, query, or fragment.');
-  }
-
-  if (
-    url.pathname.split('/').some((segment) => {
-      try {
-        decodeURIComponent(segment);
-        return false;
-      } catch {
-        return true;
-      }
-    })
-  ) {
-    throw new Error('The WebDAV file URL contains malformed percent-encoding in its path.');
-  }
-
-  return url.href;
-};
+export const canonicalFileUrl = (input: unknown) => fileUrlSchema.parse(input);
 
 export const webdavConnectionSchema = z.object({
-  url: z.string().check(
-    z.trim(),
-    z.minLength(1, 'Enter the full HTTPS WebDAV file URL.'),
-    z.refine((value) => {
-      try {
-        canonicalFileUrl(value);
-        return true;
-      } catch {
-        return false;
-      }
-    }, 'Enter a full HTTPS file URL without credentials, query, fragment, or malformed percent escapes.'),
-  ),
+  url: fileUrlSchema,
   username: z.string().check(
     z.trim(),
     z.minLength(1, 'Enter a WebDAV username.'),
@@ -96,8 +72,7 @@ const errorForStatus = (status: number) => {
 
 export type WebDavSetup = z.infer<typeof webdavConnectionSchema>;
 export const validateWebDavSetup = (input: WebDavSetup) => {
-  const setup = webdavConnectionSchema.parse(input);
-  return { ...setup, url: canonicalFileUrl(setup.url) };
+  return webdavConnectionSchema.parse(input);
 };
 
 export const createWebDavConnection = (input: WebDavSetup) => {
@@ -168,7 +143,7 @@ export const createWebDavConnection = (input: WebDavSetup) => {
       });
       if (!strongEtag(response.headers.get('ETag'))) {
         const snapshot = await read(signal);
-        if (!snapshot.etag || !equalBytes(snapshot.bytes, bytes)) {
+        if (!snapshot.etag || !isSameBytes(snapshot.bytes, bytes)) {
           throw new WebDavError(
             'unconfirmed',
             'The WebDAV upload could not be confirmed. Check the destination before retrying.',
