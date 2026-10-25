@@ -8,7 +8,7 @@ import {
 } from '@/repositories/record';
 import { loadDatabase, toEncryptedBytes } from '@/services/database';
 import { getProvider } from '@/services/provider-registry';
-import { SyncConflictError, type Sync } from '@/services/provider';
+import { SyncConflictError } from '@/services/provider';
 import { isSameBytes } from '@/utils/buffer';
 import { Lock } from '@/utils/lock';
 
@@ -53,17 +53,11 @@ const MAX_SYNC_ATTEMPTS = 3;
 export const syncSession = async ({
   record,
   database,
-  sync: preparedSync,
 }: {
   record: FileRecord;
   database: kdbxweb.Kdbx;
-  sync?: Sync<FileRecord, unknown> | Error;
 }): Promise<SyncSessionResult> => {
-  const provider = getProvider(record);
-  const configuredSync = preparedSync ?? provider.sync;
-  if (configuredSync instanceof Error) throw configuredSync;
-  const sync = typeof configuredSync === 'function' ? await configuredSync({ record, database }) : configuredSync;
-  const { label } = provider;
+  const { sync, label } = getProvider(record);
   if (!sync) {
     throw new Error(`${label} does not support sync.`);
   }
@@ -81,7 +75,10 @@ export const syncSession = async ({
   // remote only: brings the snapshot and the remote file to the same state, without writing the local record
   const syncSnapshot = async (snapshot: SyncableRecord): Promise<Synced | undefined> => {
     const isLocalChanged = isModified(snapshot);
-    const { data, isRemoteChanged } = (await sync.check?.(snapshot)) ?? { data: undefined, isRemoteChanged: true };
+    const { data, isRemoteChanged } = (await sync.check?.(snapshot, database)) ?? {
+      data: undefined,
+      isRemoteChanged: true,
+    };
 
     if (!isLocalChanged && !isRemoteChanged) {
       return undefined;

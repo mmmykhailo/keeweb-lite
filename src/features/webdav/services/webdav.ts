@@ -147,107 +147,107 @@ export const createWebDavRecord = async ({
   }
 };
 
-export const createWebDavSync = async ({
-  record,
-  database,
-}: {
-  record: WebDavFileRecord;
-  database: kdbx.Kdbx;
-}): Promise<Sync<WebDavFileRecord, string | undefined>> => {
-  const kdbx = await loadKdbxweb();
-  const container = await loadDatabase({
-    encryptedBytes: record.source.credentials,
-    credentials: database.credentials,
-  }).catch((cause: unknown) => {
-    throw new Error('Saved WebDAV credentials could not be unlocked. Download and reimport to reconnect.', { cause });
-  });
-  const entry = container.getDefaultGroup().entries[0];
-  const username = entry?.fields.get('Username');
-  const password = entry?.fields.get('Password');
-  if (!(username instanceof kdbx.ProtectedValue) || !(password instanceof kdbx.ProtectedValue)) {
-    throw new Error('Saved WebDAV credentials are invalid. Download and reimport to reconnect.');
+export const webDavSync: Sync<
+  WebDavFileRecord,
+  {
+    setup: WebDavSetup;
+    etag?: string;
+    credentials: kdbx.Credentials;
   }
-  const setup = { url: record.source.url, username: username.getText(), password: password.getText() };
-  const load = (bytes: Uint8Array) => loadDatabase({ encryptedBytes: bytes, credentials: database.credentials });
-  return {
-    check: async ({ source }) => {
-      const etag = await statWebDav(setup);
-      return { data: etag, isRemoteChanged: !etag || etag !== source.etag };
-    },
-    pull: async (record, etag) => {
-      const snapshot = await readWebDav(setup, etag);
-      const candidate = await load(record.kdbx.encryptedBytes);
-      const remote = await load(snapshot.bytes).catch((cause: unknown) => {
-        throw new Error(
-          'The remote WebDAV database could not be unlocked. Download your local database and reimport with its current password and key file.',
-          { cause },
+> = {
+  check: async (record, database) => {
+    const kdbx = await loadKdbxweb();
+    const container = await loadDatabase({
+      encryptedBytes: record.source.credentials,
+      credentials: database.credentials,
+    }).catch((cause: unknown) => {
+      throw new Error('Saved WebDAV credentials could not be unlocked. Download and reimport to reconnect.', { cause });
+    });
+    const entry = container.getDefaultGroup().entries[0];
+    const username = entry?.fields.get('Username');
+    const password = entry?.fields.get('Password');
+    if (!(username instanceof kdbx.ProtectedValue) || !(password instanceof kdbx.ProtectedValue)) {
+      throw new Error('Saved WebDAV credentials are invalid. Download and reimport to reconnect.');
+    }
+    const setup = { url: record.source.url, username: username.getText(), password: password.getText() };
+    const etag = await statWebDav(setup);
+    return {
+      data: { setup, etag, credentials: database.credentials },
+      isRemoteChanged: !etag || etag !== record.source.etag,
+    };
+  },
+  pull: async (record, { setup, etag, credentials }) => {
+    const kdbx = await loadKdbxweb();
+    const load = (bytes: Uint8Array) => loadDatabase({ encryptedBytes: bytes, credentials });
+    const snapshot = await readWebDav(setup, etag);
+    const candidate = await load(record.kdbx.encryptedBytes);
+    const remote = await load(snapshot.bytes).catch((cause: unknown) => {
+      throw new Error(
+        'The remote WebDAV database could not be unlocked. Download your local database and reimport with its current password and key file.',
+        { cause },
+      );
+    });
+    if (!candidate.getDefaultGroup().uuid.equals(remote.getDefaultGroup().uuid)) {
+      throw new Error('The WebDAV file is a different database. The local cache has been kept.');
+    }
+    if (isModified(record)) {
+      // KDBX drops milliseconds. kdbxweb identifies current and historical versions by
+      // timestamp; refuse collisions that could discard remote content.
+      const entryContent = (version: kdbx.KdbxEntry) =>
+        JSON.stringify(
+          {
+            fields: new Map(
+              [...version.fields].map(([name, value]) => [name, typeof value === 'string' ? value : value.getText()]),
+            ),
+            binaries: new Map(
+              [...version.binaries].map(([name, value]) => [name, 'hash' in value ? value.hash : value]),
+            ),
+            tags: version.tags.toSorted(),
+            icon: version.icon,
+            customIcon: version.customIcon,
+            fgColor: version.fgColor,
+            bgColor: version.bgColor,
+            overrideUrl: version.overrideUrl,
+            autoType: version.autoType,
+            customData: version.customData,
+            qualityCheck: version.qualityCheck,
+            expires: !!version.times.expires,
+            expiryTime: version.times.expires ? version.times.expiryTime : undefined,
+          },
+          (_key, value: unknown) => {
+            if (value instanceof kdbx.ProtectedValue) return value.toBase64();
+            if (value instanceof kdbx.KdbxUuid) return value.id;
+            if (value instanceof Map)
+              return [...value.entries()].sort(([left], [right]) => String(left).localeCompare(String(right)));
+            if (value instanceof ArrayBuffer || value instanceof Uint8Array) return kdbx.ByteUtils.bytesToBase64(value);
+            return value;
+          },
         );
-      });
-      if (!candidate.getDefaultGroup().uuid.equals(remote.getDefaultGroup().uuid)) {
-        throw new Error('The WebDAV file is a different database. The local cache has been kept.');
-      }
-      if (isModified(record)) {
-        // KDBX drops milliseconds. kdbxweb identifies current and historical versions by
-        // timestamp; refuse collisions that could discard remote content.
-        const entryContent = (version: kdbx.KdbxEntry) =>
-          JSON.stringify(
-            {
-              fields: new Map(
-                [...version.fields].map(([name, value]) => [name, typeof value === 'string' ? value : value.getText()]),
-              ),
-              binaries: new Map(
-                [...version.binaries].map(([name, value]) => [name, 'hash' in value ? value.hash : value]),
-              ),
-              tags: version.tags.toSorted(),
-              icon: version.icon,
-              customIcon: version.customIcon,
-              fgColor: version.fgColor,
-              bgColor: version.bgColor,
-              overrideUrl: version.overrideUrl,
-              autoType: version.autoType,
-              customData: version.customData,
-              qualityCheck: version.qualityCheck,
-              expires: !!version.times.expires,
-              expiryTime: version.times.expires ? version.times.expiryTime : undefined,
-            },
-            (_key, value: unknown) => {
-              if (value instanceof kdbx.ProtectedValue) return value.toBase64();
-              if (value instanceof kdbx.KdbxUuid) return value.id;
-              if (value instanceof Map)
-                return [...value.entries()].sort(([left], [right]) => String(left).localeCompare(String(right)));
-              if (value instanceof ArrayBuffer || value instanceof Uint8Array)
-                return kdbx.ByteUtils.bytesToBase64(value);
-              return value;
-            },
-          );
-        const remoteEntries = new Map(
-          [...remote.getDefaultGroup().allEntries()].map((entry) => [entry.uuid.id, entry]),
-        );
-        for (const entry of candidate.getDefaultGroup().allEntries()) {
-          const remoteEntry = remoteEntries.get(entry.uuid.id);
-          if (!remoteEntry) continue;
-          const localVersions = [entry, ...entry.history].map((version) => ({
-            time: version.lastModTime,
-            content: entryContent(version),
-          }));
-          for (const version of [remoteEntry, ...remoteEntry.history]) {
-            const remoteContent = entryContent(version);
-            if (
-              localVersions.some((local) => local.time === version.lastModTime && local.content !== remoteContent) &&
-              !localVersions.some((local) => local.content === remoteContent)
-            ) {
-              throw new Error(
-                'Conflicting entry changes have the same timestamp. Download your local database and resolve the conflict before retrying.',
-              );
-            }
+      const remoteEntries = new Map([...remote.getDefaultGroup().allEntries()].map((entry) => [entry.uuid.id, entry]));
+      for (const entry of candidate.getDefaultGroup().allEntries()) {
+        const remoteEntry = remoteEntries.get(entry.uuid.id);
+        if (!remoteEntry) continue;
+        const localVersions = [entry, ...entry.history].map((version) => ({
+          time: version.lastModTime,
+          content: entryContent(version),
+        }));
+        for (const version of [remoteEntry, ...remoteEntry.history]) {
+          const remoteContent = entryContent(version);
+          if (
+            localVersions.some((local) => local.time === version.lastModTime && local.content !== remoteContent) &&
+            !localVersions.some((local) => local.content === remoteContent)
+          ) {
+            throw new Error(
+              'Conflicting entry changes have the same timestamp. Download your local database and resolve the conflict before retrying.',
+            );
           }
         }
       }
-      return { bytes: snapshot.bytes, source: { ...record.source, etag: snapshot.etag } };
-    },
-    push: async ({ source }, bytes, etag) => ({
-      ...source,
-      etag: await writeWebDav({ setup, bytes, etag }),
-    }),
-  };
+    }
+    return { bytes: snapshot.bytes, source: { ...record.source, etag: snapshot.etag } };
+  },
+  push: async ({ source }, bytes, { setup, etag }) => ({
+    ...source,
+    etag: await writeWebDav({ setup, bytes, etag }),
+  }),
 };

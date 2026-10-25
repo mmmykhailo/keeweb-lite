@@ -262,14 +262,15 @@ describe('webdav', () => {
       expect(isModified(current)).toBe(false);
     });
 
-    it('decrypts saved credentials once per unlocked session', async () => {
+    it('decrypts credentials once per sync pass and shares them across its requests', async () => {
       using context = await imported();
       const { record, fetch, bytes } = context;
       using load = vi.spyOn(kdbx.Kdbx, 'load');
       const session = await unlockSession({ record, password });
-      fetch.mockImplementation(() => Promise.resolve(response(bytes, '"imported"')));
+      fetch.mockClear();
+      fetch.mockImplementation(() => Promise.resolve(response(bytes, '"new"')));
       await syncSession(session);
-      await syncSession(session);
+      expect(fetch.mock.calls.map((call) => call[1].method)).toEqual(['HEAD', 'GET']);
       expect(
         load.mock.calls.filter(([bytes]) => isSameBytes(new Uint8Array(bytes), record.source.credentials)),
       ).toHaveLength(1);
