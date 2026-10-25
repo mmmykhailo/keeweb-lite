@@ -47,15 +47,28 @@ const strongEtag = (value: string | null) => {
 };
 
 const errorForStatus = (status: number) => {
-  if (status === 401) return new Error('WebDAV rejected these connection credentials.');
-  if (status === 403) return new Error('The WebDAV account does not have permission for this file.');
-  if (status === 404 || status === 410) return new Error('The WebDAV file could not be found.');
-  if (status === 412) return new SyncConflictError();
-  if (status === 423) return new Error('The WebDAV file is locked on the server.');
-  if (status === 507) return new Error('The WebDAV server does not have enough storage space.');
-  if (status === 405 || status === 501) return new Error('The WebDAV server does not support this operation.');
-  if (status === 409) return new Error('The WebDAV destination collection is unavailable.');
-  return new Error(`WebDAV request failed with HTTP ${status}.`);
+  switch (status) {
+    case 401:
+      return new Error('WebDAV rejected these connection credentials.');
+    case 403:
+      return new Error('The WebDAV account does not have permission for this file.');
+    case 404:
+    case 410:
+      return new Error('The WebDAV file could not be found.');
+    case 412:
+      return new SyncConflictError();
+    case 423:
+      return new Error('The WebDAV file is locked on the server.');
+    case 507:
+      return new Error('The WebDAV server does not have enough storage space.');
+    case 405:
+    case 501:
+      return new Error('The WebDAV server does not support this operation.');
+    case 409:
+      return new Error('The WebDAV destination collection is unavailable.');
+    default:
+      return new Error(`WebDAV request failed with HTTP ${status}.`);
+  }
 };
 
 export type WebDavSetup = z.infer<typeof webdavConnectionSchema>;
