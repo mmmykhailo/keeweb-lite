@@ -1,6 +1,6 @@
 import kdbx from '@/utils/kdbxweb';
 import { unlockSession } from '@/features/unlock/services/session';
-import { syncSession } from '@/features/workspace/services/session';
+import { syncSession, updateRecordDatabase } from '@/features/workspace/services/session';
 import { createFileList } from '@tests/utils/file-list';
 import { get, set } from 'idb-keyval';
 import { describe, expect, it, vi } from 'vitest';
@@ -334,6 +334,98 @@ describe('webdav', () => {
       );
       await expect(syncSession({ record: saved, database: db })).rejects.toThrow();
       expect(await getRecord(record.id)).toEqual(saved);
+    });
+
+    it('keeps unsynced intermediate history after reopening and merging a newer remote entry', async () => {
+      const db = await database();
+      const entry = db.createEntry(db.getDefaultGroup());
+      entry.fields.set('Title', 'Original');
+      entry.times.lastModTime = new Date('2026-01-01T00:00:00Z');
+      using context = await imported(db);
+      const { record, bytes, fetch } = context;
+      const local = await cloneDatabase(db);
+      const localEntry = local.getDefaultGroup().entries[0];
+      localEntry.pushHistory();
+      localEntry.fields.set('Title', 'Local intermediate');
+      localEntry.times.lastModTime = new Date('2026-01-01T00:00:02Z');
+      localEntry.pushHistory();
+      localEntry.fields.set('Title', 'Local latest');
+      localEntry.times.lastModTime = new Date('2026-01-01T00:00:04Z');
+      const saved = await recordStorage.update(record, {
+        encryptedBytes: await toEncryptedBytes(local),
+        localEditState: local.getLocalEditState(),
+      });
+      const remote = await unlockDatabase({ encryptedBytes: bytes, password });
+      const remoteEntry = remote.getDefaultGroup().entries[0];
+      remoteEntry.pushHistory();
+      remoteEntry.fields.set('Title', 'Remote latest');
+      remoteEntry.times.lastModTime = new Date('2026-01-01T00:00:06Z');
+      const remoteBytes = await toEncryptedBytes(remote);
+      fetch.mockImplementation(() => Promise.resolve(response(remoteBytes, '"new"')));
+      if (saved.type !== 'webdav') throw new Error('Expected WebDAV');
+      const reopened = await unlockSession({ record: saved, password });
+      const merged = await syncSession(reopened);
+      const stored = await unlockSession({ record: await getRecord(record.id), password });
+      expect(merged.database.getDefaultGroup().entries[0].fields.get('Title')).toBe('Remote latest');
+      expect(stored.database.getDefaultGroup().entries[0].history.map((item) => item.fields.get('Title'))).toEqual(
+        expect.arrayContaining(['Local intermediate', 'Local latest']),
+      );
+    });
+
+    it('clears only uploaded history state when another edit is saved during upload', async () => {
+      const db = await database();
+      const entry = db.createEntry(db.getDefaultGroup());
+      entry.fields.set('Title', 'Original');
+      entry.times.lastModTime = new Date('2026-01-01T00:00:00Z');
+      using context = await imported(db);
+      const { record, fetch } = context;
+      const [firstDatabase, firstRecord] = await updateRecordDatabase({
+        record,
+        database: db,
+        update: (local) => {
+          const entry = local.getDefaultGroup().entries[0];
+          entry.pushHistory();
+          entry.fields.set('Title', 'First');
+          local.meta.historyMaxItems = 20;
+          entry.times.lastModTime = new Date('2026-01-01T00:00:02Z');
+        },
+      });
+      const upload = Promise.withResolvers<Response>();
+      const started = Promise.withResolvers<void>();
+      fetch.mockImplementation((_url, options: RequestInit) => {
+        if (options.method === 'HEAD') return Promise.resolve(response(new Uint8Array(), '"imported"'));
+        started.resolve();
+        return upload.promise;
+      });
+      const syncing = syncSession({ record: firstRecord, database: firstDatabase });
+      await started.promise;
+      await updateRecordDatabase({
+        record: firstRecord,
+        database: firstDatabase,
+        update: (local) => {
+          const entry = local.getDefaultGroup().entries[0];
+          entry.pushHistory();
+          entry.fields.set('Title', 'Second');
+          local.meta.color = '#112233';
+          entry.times.lastModTime = new Date('2026-01-01T00:00:04Z');
+        },
+      });
+      upload.resolve(response(new Uint8Array(), '"first"'));
+      await syncing;
+      const stored = await getRecord(record.id);
+      if (stored.type !== 'webdav') throw new Error('Expected WebDAV');
+      expect(stored.localEditState?.entries?.[entry.uuid.id]?.added).toEqual([
+        new Date('2026-01-01T00:00:02Z').getTime(),
+      ]);
+      expect(stored.localEditState?.meta?.historyMaxItemsChanged).toBeUndefined();
+      expect(stored.localEditState?.meta?.colorChanged).toBeInstanceOf(Date);
+      expect(isModified(stored)).toBe(true);
+      fetch.mockImplementation(() => Promise.resolve(response(new Uint8Array(), '"first"')));
+      const reopened = await unlockSession({ record: stored, password });
+      await syncSession(reopened);
+      const synced = await getRecord(record.id);
+      expect(synced.type === 'webdav' && synced.localEditState).toBeUndefined();
+      expect(synced.type === 'webdav' && isModified(synced)).toBe(false);
     });
 
     it('retains both competing versions in native history without adding conflict entries', async () => {

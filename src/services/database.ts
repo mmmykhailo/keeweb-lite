@@ -15,20 +15,26 @@ export const toKeyFileHash = async (file: File) => {
 export const loadDatabase = async ({
   encryptedBytes,
   credentials,
+  localEditState,
 }: {
   encryptedBytes: Uint8Array;
   credentials: kdbxweb.Credentials;
+  localEditState?: ReturnType<kdbxweb.Kdbx['getLocalEditState']>;
 }) => {
   const kdbxweb = await loadKdbxweb();
 
-  return kdbxweb.Kdbx.load(asArrayBuffer(encryptedBytes), credentials);
+  const database = await kdbxweb.Kdbx.load(asArrayBuffer(encryptedBytes), credentials);
+  if (localEditState) database.setLocalEditState(structuredClone(localEditState));
+  return database;
 };
 
 export const unlockDatabase = async ({
   encryptedBytes,
   keyFileHashBase64,
   password,
+  localEditState,
 }: {
+  localEditState?: ReturnType<kdbxweb.Kdbx['getLocalEditState']>;
   encryptedBytes: Uint8Array;
   keyFileHashBase64?: string | null;
   password: string;
@@ -39,7 +45,7 @@ export const unlockDatabase = async ({
   await credentials.ready;
 
   try {
-    return await loadDatabase({ encryptedBytes, credentials });
+    return await loadDatabase({ encryptedBytes, credentials, localEditState });
   } catch (error) {
     if (error instanceof kdbxweb.KdbxError && error.code === kdbxweb.Consts.ErrorCodes.InvalidKey) {
       throw new Error('Invalid password or key file.', { cause: error });

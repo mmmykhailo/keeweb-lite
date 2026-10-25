@@ -25,6 +25,7 @@ export const unlockSession = async ({
     encryptedBytes: record.kdbx.encryptedBytes,
     keyFileHashBase64: record.key?.hash,
     password,
+    localEditState: 'source' in record ? record.localEditState : undefined,
   });
 
   const updatedRecord = await updateRecord(record.id, (currentRecord) => ({

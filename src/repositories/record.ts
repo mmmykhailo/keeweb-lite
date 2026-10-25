@@ -24,6 +24,23 @@ const localFileRecordSchema = z.object({
   type: z.literal('local'),
 });
 
+const localEditStateSchema = z.object({
+  entries: z.optional(z.record(z.string(), z.object({ added: z.array(z.number()), deleted: z.array(z.number()) }))),
+  meta: z.optional(
+    z.object({
+      mntncHistoryDaysChanged: z.optional(z.date()),
+      colorChanged: z.optional(z.date()),
+      keyChangeRecChanged: z.optional(z.date()),
+      keyChangeForceChanged: z.optional(z.date()),
+      historyMaxItemsChanged: z.optional(z.date()),
+      historyMaxSizeChanged: z.optional(z.date()),
+      lastSelectedGroupChanged: z.optional(z.date()),
+      lastTopVisibleGroupChanged: z.optional(z.date()),
+      memoryProtectionChanged: z.optional(z.date()),
+    }),
+  ),
+});
+
 const googleDriveFileRecordSchema = z.object({
   id: z.string(),
   kdbx: recordKdbxSchema,
@@ -35,6 +52,7 @@ const googleDriveFileRecordSchema = z.object({
   }),
   version: z.optional(z.number()),
   syncedVersion: z.optional(z.number()),
+  localEditState: z.optional(localEditStateSchema),
   type: z.literal('google-drive'),
 });
 
@@ -44,6 +62,7 @@ const webDavFileRecordSchema = z.object({
   source: z.object({ url: z.url(), credentials: z.instanceof(Uint8Array), etag: z.optional(z.string()) }),
   version: z.optional(z.number()),
   syncedVersion: z.optional(z.number()),
+  localEditState: z.optional(localEditStateSchema),
 });
 export type WebDavFileRecord = z.infer<typeof webDavFileRecordSchema>;
 const fileRecordSchema = z.discriminatedUnion('type', [

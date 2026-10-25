@@ -13,7 +13,7 @@ keeweb-lite is a lightweight, web-only password manager inspired by [KeeWeb](htt
 - No settings/options UI; behavior is fixed by design.
 - KeeWeb-like workspace layout: groups, tags, entry list, and details editor.
 - Built-in password generator in entry editing flow.
-- Native KDBX entry history with apply/restore workflow.
+- Native KDBX entry history with apply/restore workflow; unsynced history survives reopening.
 - Remove and restore entries with recycle-bin behavior.
 - Download current encrypted `.kdbx` at any time.
 - Mobile-friendly layout for unlock and workspace flows.

@@ -12,18 +12,31 @@ export type DialogProps = {
 
 export type RecordStorage = {
   load: (input: { database: kdbxweb.Kdbx; record: FileRecord }) => Promise<kdbxweb.Kdbx>;
-  update: (record: FileRecord, changes: { encryptedBytes: Uint8Array<ArrayBuffer> }) => Promise<FileRecord>;
+  update: (
+    record: FileRecord,
+    changes: {
+      encryptedBytes: Uint8Array<ArrayBuffer>;
+      localEditState?: ReturnType<kdbxweb.Kdbx['getLocalEditState']>;
+    },
+  ) => Promise<FileRecord>;
 };
 
 export const recordStorage: RecordStorage = {
   load: async ({ database, record }) => {
-    const { kdbx } = await getRecord(record.id);
-
-    return loadDatabase({ encryptedBytes: kdbx.encryptedBytes, credentials: database.credentials });
+    const stored = await getRecord(record.id);
+    return loadDatabase({
+      encryptedBytes: stored.kdbx.encryptedBytes,
+      credentials: database.credentials,
+      localEditState: 'source' in stored ? stored.localEditState : undefined,
+    });
   },
-  update: (record, { encryptedBytes }) =>
-    updateRecord(record.id, (currentRecord) =>
-      markSaved({ ...currentRecord, kdbx: { ...currentRecord.kdbx, encryptedBytes } }),
+  update: (record, { encryptedBytes, localEditState }) =>
+    updateRecord(record.id, (current) =>
+      markSaved({
+        ...current,
+        kdbx: { ...current.kdbx, encryptedBytes },
+        ...('source' in current ? { localEditState: structuredClone(localEditState) } : {}),
+      }),
     ),
 };
 
