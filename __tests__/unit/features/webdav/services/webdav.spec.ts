@@ -67,27 +67,17 @@ describe('webdav', () => {
       expect(await getWebDavCredentials(record.id)).toBeUndefined();
     });
 
-    it('rejects wrong database factors and canceled KDF without saving credentials', async () => {
+    it('rejects wrong database factors without saving credentials', async () => {
       const db = await database();
       const bytes = await toEncryptedBytes(db);
       using _fetch0 = vi
         .spyOn(globalThis, 'fetch')
         .mockImplementation(vi.fn().mockImplementation(() => Promise.resolve(response(bytes))));
       await expect(importWebDavRecord({ ...setup, databasePassword: 'wrong' })).rejects.toThrow('Invalid password');
-      const controller = new AbortController();
-      const load = kdbx.Kdbx.load;
-      using _load = vi.spyOn(kdbx.Kdbx, 'load').mockImplementation(async (...args) => {
-        const result = await load(...args);
-        controller.abort();
-        return result;
-      });
-      await expect(
-        importWebDavRecord({ ...setup, databasePassword: password, signal: controller.signal }),
-      ).rejects.toMatchObject({ name: 'AbortError' });
       expect(await getRecords()).toEqual([]);
     });
 
-    it('rejects duplicate URLs and canceled inserts without saving credentials', async () => {
+    it('rejects duplicate URLs without saving credentials', async () => {
       using context = await imported();
       const { record } = context;
       await removeRecord(record.id);
@@ -97,14 +87,6 @@ describe('webdav', () => {
       ]);
       expect(attempts.map((result) => result.status).sort()).toEqual(['fulfilled', 'rejected']);
       expect(await getWebDavCredentials('duplicate')).toBeUndefined();
-      await removeRecord(record.id);
-      const controller = new AbortController();
-      controller.abort();
-      await expect(insertWebDavRecord(record, new Uint8Array([1]), controller.signal)).rejects.toMatchObject({
-        name: 'AbortError',
-      });
-      expect(await getRecords()).toEqual([]);
-      expect(await getWebDavCredentials(record.id)).toBeUndefined();
     });
 
     it.each(['v3-aes', 'v4-aes', 'argon2id', 'argon2d'])(
@@ -169,43 +151,34 @@ describe('webdav', () => {
   });
 
   describe('WebDAV creation recovery', () => {
-    it.each(['failure', 'exists', 'canceled', 'uncertain'])(
-      'keeps a local database and generated key after %s',
-      async (kind) => {
-        const controller = new AbortController();
-        const fetch = vi.fn().mockImplementation(async (_url, options: RequestInit) => {
-          expect((await getRecords())[0].type).toBe('local');
-          expect(new Headers(options.headers).get('If-None-Match')).toBe('*');
-          if (kind === 'canceled') {
-            controller.abort();
-            throw controller.signal.reason;
-          }
-          if (kind === 'exists') return new Response(null, { status: 412 });
-          if (kind === 'uncertain') return response(new Uint8Array([9]));
-          throw new TypeError('offline');
-        });
-        using _fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(fetch);
-        if (kind === 'uncertain') fetch.mockResolvedValueOnce(new Response(null));
-        const result = await createWebDavRecord({
-          databaseName: 'Vault',
+    it.each(['failure', 'exists', 'uncertain'])('keeps a local database and generated key after %s', async (kind) => {
+      const fetch = vi.fn().mockImplementation(async (_url, options: RequestInit) => {
+        expect((await getRecords())[0].type).toBe('local');
+        expect(new Headers(options.headers).get('If-None-Match')).toBe('*');
+        if (kind === 'exists') return new Response(null, { status: 412 });
+        if (kind === 'uncertain') return response(new Uint8Array([9]));
+        throw new TypeError('offline');
+      });
+      using _fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(fetch);
+      if (kind === 'uncertain') fetch.mockResolvedValueOnce(new Response(null));
+      const result = await createWebDavRecord({
+        databaseName: 'Vault',
+        password,
+        useKeyFile: true,
+        setupInput: setup,
+      });
+      expect(result.outcome).toBe('saved-locally');
+      expect(result.record.type).toBe('local');
+      expect(result.generatedKeyFile?.bytes.length).toBeGreaterThan(0);
+      await expect(
+        unlockDatabase({
+          encryptedBytes: result.record.kdbx.encryptedBytes,
           password,
-          useKeyFile: true,
-          setupInput: setup,
-          signal: controller.signal,
-        });
-        expect(result.outcome).toBe('saved-locally');
-        expect(result.record.type).toBe('local');
-        expect(result.generatedKeyFile?.bytes.length).toBeGreaterThan(0);
-        await expect(
-          unlockDatabase({
-            encryptedBytes: result.record.kdbx.encryptedBytes,
-            password,
-            keyFileHashBase64: result.record.key?.hash,
-          }),
-        ).resolves.toBeDefined();
-        expect(await getWebDavCredentials(result.record.id)).toBeUndefined();
-      },
-    );
+          keyFileHashBase64: result.record.key?.hash,
+        }),
+      ).resolves.toBeDefined();
+      expect(await getWebDavCredentials(result.record.id)).toBeUndefined();
+    });
 
     it('uses a distinct recovery record when an existing Local database has the same name', async () => {
       const local = await createRecord({

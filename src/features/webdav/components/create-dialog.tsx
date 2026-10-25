@@ -19,7 +19,6 @@ import { createWebDavRecord } from '@/features/webdav/services/webdav';
 import { downloadBytes } from '@/utils/download';
 import { getErrorMessage } from '@/utils/error';
 import { webdavConnectionSchema } from '@/features/webdav/repositories/webdav';
-import { useSetupOperation } from '@/features/webdav/hooks/use-setup-operation';
 import type { DialogProps } from '@/services/provider';
 
 const schema = z
@@ -42,7 +41,6 @@ const schema = z
 type FormValues = z.infer<typeof schema>;
 
 export const CreateWebDavDialog = ({ open, onOpenChange, onSuccess }: DialogProps) => {
-  const { abort, begin, finish } = useSetupOperation(open);
   const {
     control,
     formState: { isSubmitting },
@@ -62,33 +60,26 @@ export const CreateWebDavDialog = ({ open, onOpenChange, onSuccess }: DialogProp
   });
 
   const handleOpenChange = (nextOpen: boolean) => {
-    if (!nextOpen) abort();
-    onOpenChange(nextOpen);
+    if (!isSubmitting) onOpenChange(nextOpen);
   };
 
   const submit = handleSubmit(async ({ databaseName, url, username, serverPassword, password, useKeyFile }) => {
-    const controller = begin();
     try {
       const result = await createWebDavRecord({
         databaseName,
         password,
         useKeyFile,
         setupInput: { url, username, password: serverPassword },
-        signal: controller.signal,
       });
 
       onSuccess();
       if (result.generatedKeyFile)
         downloadBytes({ bytes: result.generatedKeyFile.bytes, fileName: result.generatedKeyFile.name });
-      if (controller.signal.aborted) return;
-      handleOpenChange(false);
+      onOpenChange(false);
       if (result.outcome === 'created') toast.success('WebDAV database created.');
       else toast.error(getErrorMessage({ error: result.error, fallback: 'WebDAV database saved locally.' }));
     } catch (error) {
-      if (!controller.signal.aborted)
-        toast.error(getErrorMessage({ error, fallback: 'WebDAV database creation failed.' }));
-    } finally {
-      finish(controller);
+      toast.error(getErrorMessage({ error, fallback: 'WebDAV database creation failed.' }));
     }
   });
 
@@ -114,6 +105,7 @@ export const CreateWebDavDialog = ({ open, onOpenChange, onSuccess }: DialogProp
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
+        showCloseButton={!isSubmitting}
         className="max-h-[calc(100dvh-2rem)] overflow-hidden sm:max-w-lg"
         onAnimationEnd={(event) => {
           if (event.currentTarget.dataset.state === 'closed') reset();
@@ -128,7 +120,10 @@ export const CreateWebDavDialog = ({ open, onOpenChange, onSuccess }: DialogProp
 
         <form
           className="max-h-[calc(100dvh-12rem)] space-y-3 overflow-y-auto pr-1"
-          onSubmit={(event) => void submit(event)}
+          onSubmit={(event) => {
+            if (isSubmitting) event.preventDefault();
+            else void submit(event);
+          }}
         >
           {textFields.map(({ name, label, type, autoComplete }) => (
             <Controller
