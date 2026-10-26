@@ -2,7 +2,7 @@ import userEvent from '@testing-library/user-event';
 import { HttpResponse } from 'msw';
 import { useState, type Dispatch, type SetStateAction } from 'react';
 import { describe, expect, it, vi } from 'vitest';
-import { screen } from '@testing-library/react';
+import { screen, waitFor } from '@testing-library/react';
 import { useSync } from '@/features/workspace/hooks/use-sync';
 import { createRecord } from '@/repositories/record';
 import { createEmptyDatabase, toEncryptedBytes, unlockDatabase } from '@/services/database';
@@ -120,6 +120,43 @@ describe('use-sync', () => {
       expect(await screen.findByText('Remote entry')).toBeInTheDocument();
       expect(screen.getByTestId('status')).toHaveTextContent('idle');
       expect(screen.getByTestId('version')).toHaveTextContent('1');
+    });
+
+    it('does not replace a reopened session with an earlier sync completion', async () => {
+      const { session, remoteBytes } = await createSession();
+      if (session.record.type !== 'google-drive') throw new Error('Expected Google Drive');
+      const reopened = await unlockSession({ record: session.record, password: 'secret' });
+      const started = Promise.withResolvers<void>();
+      const released = Promise.withResolvers<void>();
+      const drive = googleDriveApi.fakeFile({
+        bytes: remoteBytes,
+        onDownload: () => {
+          started.resolve();
+          return released.promise;
+        },
+      });
+      mockServer.addHandlers(googleDriveApi.preflight.ok(), ...drive.handlers);
+      const Harness = () => {
+        const [current, setCurrent] = useState<UnlockSession | null>(session);
+        return (
+          <>
+            <button onClick={() => setCurrent(reopened)}>Reopen</button>
+            <span>
+              {current?.database.credentials === reopened.database.credentials
+                ? 'reopened session'
+                : 'original session'}
+            </span>
+            {current && <SyncStatus session={current} setSession={setCurrent} />}
+          </>
+        );
+      };
+      const user = userEvent.setup();
+      render(<Harness />);
+      await started.promise;
+      await user.click(screen.getByRole('button', { name: 'Reopen' }));
+      released.resolve();
+      await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('idle'));
+      expect(screen.getByText('reopened session')).toBeInTheDocument();
     });
 
     it('runs one waiting sync for the version changes made during a sync', async () => {
