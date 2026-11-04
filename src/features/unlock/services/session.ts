@@ -16,7 +16,6 @@ export const openDatabase = ({ record, password }: { record: PersistedFileRecord
     encryptedBytes: record.kdbx.encryptedBytes,
     keyFileHashBase64: record.key?.hash,
     password,
-    localEditState: 'source' in record ? record.localEditState : undefined,
   });
 };
 
