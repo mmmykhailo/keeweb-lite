@@ -16,7 +16,6 @@ import {
 import { insertWebDavRecord } from '@/features/webdav/repositories/record';
 import { createWebDavRecord, importWebDavRecord } from '@/features/webdav/services/webdav';
 import { recordStorage } from '@/services/provider';
-import { isSameBytes } from '@/utils/buffer';
 import { cloneDatabase } from '@/services/database';
 import { toEncryptedBytes, unlockDatabase } from '@/services/database';
 
@@ -88,51 +87,63 @@ describe('webdav', () => {
       expect(await getWebDavCredentials('duplicate')).toBeUndefined();
     });
 
-    it.each(['v3-aes', 'v4-aes', 'argon2id', 'argon2d'])(
-      'copies %s costs with independent salts and password/key-file protection',
+    it('stores independently encrypted connection bytes with password and key-file protection', async () => {
+      const key = await kdbx.Credentials.createRandomKeyFile(2);
+      const db = await database(key);
+      const bytes = await toEncryptedBytes(db);
+      using fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => response(bytes));
+      const keyFile = createFileList(new File([key.slice().buffer], 'vault.keyx'));
+      const record = await importWebDavRecord({ ...setup, databasePassword: password, keyFile });
+      expect(new TextDecoder().decode(record.source.credentials)).not.toContain(setup.password);
+      expect(db.getDefaultGroup().entries).toHaveLength(0);
+      await removeRecord(record.id);
+      const second = await importWebDavRecord({ ...setup, databasePassword: password, keyFile });
+      expect(second.source.credentials).not.toEqual(record.source.credentials);
+
+      const session = await unlockSession({ record: second, password });
+      await syncSession(session);
+
+      expect(fetch).toHaveBeenLastCalledWith(
+        setup.url,
+        expect.objectContaining({
+          method: 'HEAD',
+          headers: expect.objectContaining({
+            Authorization: `Basic ${Buffer.from(`${setup.username}:${setup.password}`).toString('base64')}`,
+          }),
+        }),
+      );
+    });
+
+    it.each(['password', 'key file', 'ciphertext', 'URL'])(
+      'refuses to send connection credentials after changing the %s',
       async (kind) => {
-        const key = await kdbx.Credentials.createRandomKeyFile(2);
-        const db = await database(key);
-        if (kind === 'v3-aes') {
-          db.setVersion(3);
-          db.header.keyEncryptionRounds = 1234;
-        } else if (kind === 'v4-aes') {
-          db.setKdf(kdbx.Consts.KdfId.Aes);
-          db.header.kdfParameters?.set('R', kdbx.VarDictionary.ValueType.UInt64, new kdbx.Int64(1234));
-        } else db.setKdf(kind === 'argon2id' ? kdbx.Consts.KdfId.Argon2id : kdbx.Consts.KdfId.Argon2d);
-        const bytes = await toEncryptedBytes(db);
-        using _fetch = vi
-          .spyOn(globalThis, 'fetch')
-          .mockImplementation(vi.fn().mockImplementation(async () => response(bytes)));
-        const keyFile = createFileList(new File([key.slice().buffer], 'vault.keyx'));
-        const record = await importWebDavRecord({ ...setup, databasePassword: password, keyFile });
-        const containerBytes = await getWebDavCredentials(record.id);
-        if (!containerBytes) throw new Error('Missing credentials.');
-        await expect(unlockDatabase({ encryptedBytes: containerBytes, password })).rejects.toThrow();
-        const container = await unlockDatabase({
-          encryptedBytes: containerBytes,
-          password,
-          keyFileHashBase64: record.key?.hash,
-        });
-        expect(container.versionMajor).toBe(db.versionMajor);
-        expect(container.header.masterSeed).not.toEqual(db.header.masterSeed);
-        if (kind === 'v3-aes') {
-          expect(container.header.keyEncryptionRounds).toBe(1234);
-          expect(container.header.transformSeed).not.toEqual(db.header.transformSeed);
-        } else {
-          for (const name of ['$UUID', ...(kind === 'v4-aes' ? ['R'] : ['P', 'I', 'M', 'V'])])
-            expect(container.header.kdfParameters?.get(name)).toEqual(db.header.kdfParameters?.get(name));
-          const containerSalt = container.header.kdfParameters?.get('S');
-          const sourceSalt = db.header.kdfParameters?.get('S');
-          if (!(containerSalt instanceof ArrayBuffer) || !(sourceSalt instanceof ArrayBuffer))
-            throw new Error('Missing KDF salts.');
-          expect(new Uint8Array(containerSalt)).not.toEqual(new Uint8Array(sourceSalt));
+        using context = await imported();
+        const { record, fetch } = context;
+        const stored = await updateRecord(record.id, () => ({
+          ...record,
+          source: {
+            ...record.source,
+            url: kind === 'URL' ? 'https://other.example/vault.kdbx' : record.source.url,
+            credentials:
+              kind === 'ciphertext'
+                ? record.source.credentials.map((value, index) => (index === 28 ? value ^ 1 : value))
+                : record.source.credentials,
+          },
+        }));
+        const session = await unlockSession({ record: stored, password });
+        if (kind === 'password' || kind === 'key file') {
+          session.database.credentials = new kdbx.Credentials(
+            kdbx.ProtectedValue.fromString(kind === 'password' ? 'wrong' : password),
+            kind === 'key file' ? await kdbx.Credentials.createRandomKeyFile(2) : undefined,
+          );
         }
-        expect(container.getDefaultGroup().entries[0].fields.get('Password')).toBeInstanceOf(kdbx.ProtectedValue);
-        expect(db.getDefaultGroup().entries).toHaveLength(0);
-        const session = await unlockSession({ record, password });
+        fetch.mockClear();
+
+        await expect(syncSession(session)).rejects.toThrow('Saved WebDAV credentials could not be unlocked');
+
+        expect(fetch).not.toHaveBeenCalled();
         expect(session.database.meta.name).toBe('Vault');
-        await expect(syncSession(session)).resolves.toBeDefined();
+        expect(await getRecord(record.id)).toEqual(session.record);
       },
     );
 
@@ -262,18 +273,26 @@ describe('webdav', () => {
       expect(isModified(current)).toBe(false);
     });
 
-    it('decrypts credentials once per sync pass and shares them across its requests', async () => {
+    it('decrypts credentials once per unlocked session and shares them across sync passes', async () => {
       using context = await imported();
       const { record, fetch, bytes } = context;
-      using load = vi.spyOn(kdbx.Kdbx, 'load');
       const session = await unlockSession({ record, password });
+      using decrypt = vi.spyOn(crypto.subtle, 'decrypt');
       fetch.mockClear();
       fetch.mockImplementation(() => Promise.resolve(response(bytes, '"new"')));
+
       await syncSession(session);
-      expect(fetch.mock.calls.map((call) => call[1].method)).toEqual(['HEAD', 'GET']);
+      await syncSession(session);
+
       expect(
-        load.mock.calls.filter(([bytes]) => isSameBytes(new Uint8Array(bytes), record.source.credentials)),
+        decrypt.mock.calls.filter(([algorithm]) => typeof algorithm !== 'string' && algorithm.name === 'AES-GCM'),
       ).toHaveLength(1);
+      expect(fetch.mock.calls.map((call) => call[1].method)).toEqual(['HEAD', 'GET', 'HEAD']);
+      const reopened = await unlockSession({ record: await getRecord(record.id), password });
+      await syncSession(reopened);
+      expect(
+        decrypt.mock.calls.filter(([algorithm]) => typeof algorithm !== 'string' && algorithm.name === 'AES-GCM'),
+      ).toHaveLength(2);
     });
 
     it('reloads and merges the new remote revision after a conflicting PUT', async () => {

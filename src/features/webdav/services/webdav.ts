@@ -9,35 +9,56 @@ import {
   type WebDavSetup,
 } from '@/features/webdav/repositories/webdav';
 import type { Sync } from '@/services/provider';
-import { createEmptyDatabase, toEncryptedBytes, unlockDatabase, loadDatabase, loadKdbxweb } from '@/services/database';
+import { createEmptyDatabase, unlockDatabase, loadDatabase } from '@/services/database';
 import { validateNewDatabaseInput, toKey } from '@/services/record';
 
+const sessionConnections = new WeakMap<kdbx.Credentials, WebDavSetup>();
+
 const encryptConnection = async (setup: WebDavSetup, database: kdbx.Kdbx) => {
-  const kdbx = await loadKdbxweb();
-  const container = kdbx.Kdbx.create(database.credentials, 'WebDAV connection');
-  if (database.versionMajor < 4) {
-    const rounds = database.header.keyEncryptionRounds;
-    if (!rounds || rounds < 1) {
-      throw new Error('The database uses an unsupported key transformation setting.');
-    }
-    container.setVersion(3);
-    container.header.keyEncryptionRounds = rounds;
-  } else {
-    const sourceParameters = database.header.kdfParameters;
-    if (!sourceParameters) {
-      throw new Error('The database uses an unsupported key derivation setting.');
-    }
-    const stream = new kdbx.BinaryStream();
-    sourceParameters.write(stream);
-    container.header.kdfParameters = kdbx.VarDictionary.read(new kdbx.BinaryStream(stream.getWrittenBytes()));
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const material = await crypto.subtle.importKey('raw', await database.credentials.getHash(), 'PBKDF2', false, [
+    'deriveKey',
+  ]);
+  const key = await crypto.subtle.deriveKey(
+    { name: 'PBKDF2', hash: 'SHA-256', salt, iterations: 600_000 },
+    material,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt'],
+  );
+  const bytes = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv, additionalData: new TextEncoder().encode(setup.url) },
+    key,
+    new TextEncoder().encode(JSON.stringify(setup)),
+  );
+  return new Uint8Array([...salt, ...iv, ...new Uint8Array(bytes)]);
+};
+
+const decryptConnection = async (record: WebDavFileRecord, database: kdbx.Kdbx) => {
+  const cached = sessionConnections.get(database.credentials);
+  if (cached) {
+    return cached;
   }
-  const entry = container.createEntry(container.getDefaultGroup());
-  entry.fields.set('Title', 'Connection credentials');
-
-  entry.fields.set('Username', kdbx.ProtectedValue.fromString(setup.username));
-  entry.fields.set('Password', kdbx.ProtectedValue.fromString(setup.password));
-
-  return await toEncryptedBytes(container);
+  const encrypted = record.source.credentials;
+  const material = await crypto.subtle.importKey('raw', await database.credentials.getHash(), 'PBKDF2', false, [
+    'deriveKey',
+  ]);
+  const key = await crypto.subtle.deriveKey(
+    { name: 'PBKDF2', hash: 'SHA-256', salt: encrypted.slice(0, 16), iterations: 600_000 },
+    material,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['decrypt'],
+  );
+  const bytes = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: encrypted.slice(16, 28), additionalData: new TextEncoder().encode(record.source.url) },
+    key,
+    encrypted.slice(28),
+  );
+  const setup = webdavConnectionSchema.parse(JSON.parse(new TextDecoder().decode(bytes)));
+  sessionConnections.set(database.credentials, setup);
+  return setup;
 };
 
 export const importWebDavRecord = async ({
@@ -146,20 +167,9 @@ export const webDavSync: Sync<
   }
 > = {
   check: async (record, database) => {
-    const kdbx = await loadKdbxweb();
-    const container = await loadDatabase({
-      encryptedBytes: record.source.credentials,
-      credentials: database.credentials,
-    }).catch((cause: unknown) => {
+    const setup = await decryptConnection(record, database).catch((cause: unknown) => {
       throw new Error('Saved WebDAV credentials could not be unlocked. Download and reimport to reconnect.', { cause });
     });
-    const entry = container.getDefaultGroup().entries[0];
-    const username = entry?.fields.get('Username');
-    const password = entry?.fields.get('Password');
-    if (!(username instanceof kdbx.ProtectedValue) || !(password instanceof kdbx.ProtectedValue)) {
-      throw new Error('Saved WebDAV credentials are invalid. Download and reimport to reconnect.');
-    }
-    const setup = { url: record.source.url, username: username.getText(), password: password.getText() };
     const etag = await statWebDav(setup);
     return {
       data: { setup, etag, credentials: database.credentials },
