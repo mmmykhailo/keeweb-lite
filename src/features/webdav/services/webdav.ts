@@ -1,5 +1,4 @@
 import type kdbx from '@/utils/kdbxweb';
-import { loadKdbxweb } from '@/utils/load-kdbxweb';
 import {
   createRecord,
   getRecord,
@@ -17,7 +16,7 @@ import {
   type WebDavSetup,
 } from '@/features/webdav/repositories/webdav';
 import type { Sync } from '@/services/provider';
-import { createEmptyDatabase, toEncryptedBytes, unlockDatabase, loadDatabase } from '@/services/database';
+import { createEmptyDatabase, toEncryptedBytes, unlockDatabase, loadDatabase, loadKdbxweb } from '@/services/database';
 import { validateNewDatabaseInput, toKey } from '@/services/record';
 
 const encryptConnection = async (setup: WebDavSetup, database: kdbx.Kdbx) => {

@@ -1,7 +1,9 @@
 import type kdbxweb from '@/utils/kdbxweb';
 import { asArrayBuffer, asUint8Array } from '@/utils/buffer';
 import { Lock } from '@/utils/lock';
-import { loadKdbxweb } from '@/utils/load-kdbxweb';
+
+// Keep the KDBX dependencies (~245 KB) out of the initial unlock page bundle.
+export const loadKdbxweb = async () => (await import('@/utils/kdbxweb')).default;
 
 export class InvalidKeyError extends Error {
   constructor(options?: ErrorOptions) {

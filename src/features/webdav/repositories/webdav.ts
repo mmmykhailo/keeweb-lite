@@ -1,5 +1,5 @@
 import * as z from 'zod/mini';
-import { loadKdbxweb } from '@/utils/load-kdbxweb';
+import { loadKdbxweb } from '@/services/database';
 import { isSameBytes } from '@/utils/buffer';
 import { SyncConflictError } from '@/services/provider';
 
