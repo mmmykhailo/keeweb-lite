@@ -15,8 +15,9 @@ const fileUrlSchema = z.url({ protocol: /^https$/, normalize: true }).check(
       value.includes('#') ||
       url.pathname === '/' ||
       url.pathname.endsWith('/')
-    )
+    ) {
       return false;
+    }
     try {
       decodeURIComponent(url.pathname);
       return true;
@@ -42,7 +43,9 @@ export const webdavConnectionSchema = z.object({
 });
 
 const strongEtag = (value: string | null) => {
-  if (!value || /^W\//i.test(value) || !/^"[\x21\x23-\x7e\x80-\xff]*"$/.test(value)) return undefined;
+  if (!value || /^W\//i.test(value) || !/^"[\x21\x23-\x7e\x80-\xff]*"$/.test(value)) {
+    return undefined;
+  }
   return value;
 };
 
@@ -76,25 +79,24 @@ export type WebDavSetup = z.infer<typeof webdavConnectionSchema>;
 const request = async (setup: WebDavSetup, options: RequestInit) => {
   const { url, username, password } = webdavConnectionSchema.parse(setup);
   const kdbx = await loadKdbxweb();
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      ...options,
-      mode: 'cors',
-      credentials: 'omit',
-      cache: 'no-store',
-      redirect: 'error',
-      headers: {
-        Authorization: `Basic ${kdbx.ByteUtils.bytesToBase64(kdbx.ByteUtils.stringToBytes(`${username}:${password}`))}`,
-        ...Object.fromEntries(new Headers(options.headers)),
-      },
-    });
-  } catch (cause) {
+  const response = await fetch(url, {
+    ...options,
+    mode: 'cors',
+    credentials: 'omit',
+    cache: 'no-store',
+    redirect: 'error',
+    headers: {
+      Authorization: `Basic ${kdbx.ByteUtils.bytesToBase64(kdbx.ByteUtils.stringToBytes(`${username}:${password}`))}`,
+      ...Object.fromEntries(new Headers(options.headers)),
+    },
+  }).catch((cause: unknown) => {
     throw new Error('The browser could not access this WebDAV endpoint. Check its HTTPS and browser access settings.', {
       cause,
     });
+  });
+  if (!response.ok) {
+    throw errorForStatus(response.status);
   }
-  if (!response.ok) throw errorForStatus(response.status);
   return response;
 };
 
@@ -106,7 +108,9 @@ export const statWebDav = async (setup: WebDavSetup) => {
 export const readWebDav = async (setup: WebDavSetup, etag?: string) => {
   const response = await request(setup, { method: 'GET', headers: etag ? { 'If-Match': etag } : {} });
   const currentEtag = strongEtag(response.headers.get('ETag'));
-  if (etag && currentEtag !== etag) throw new SyncConflictError();
+  if (etag && currentEtag !== etag) {
+    throw new SyncConflictError();
+  }
   try {
     return { bytes: new Uint8Array(await response.arrayBuffer()), etag: currentEtag };
   } catch (cause) {
@@ -126,21 +130,23 @@ export const writeWebDav = async ({
   create?: boolean;
 }) => {
   const validator = create ? '*' : strongEtag(etag ?? null);
-  if (!validator) throw new Error('This WebDAV server did not provide a strong ETag. Updates are disabled.');
-  let response: Response;
-  try {
-    response = await request(setup, {
-      method: 'PUT',
-      body: bytes.slice().buffer,
-      headers: { 'Content-Type': 'application/octet-stream', [create ? 'If-None-Match' : 'If-Match']: validator },
-    });
-  } catch (error) {
-    if (create && error instanceof SyncConflictError)
-      throw new Error('A WebDAV file already exists at this URL.', { cause: error });
-    throw error;
+  if (!validator) {
+    throw new Error('This WebDAV server did not provide a strong ETag. Updates are disabled.');
   }
+  const response = await request(setup, {
+    method: 'PUT',
+    body: bytes.slice().buffer,
+    headers: { 'Content-Type': 'application/octet-stream', [create ? 'If-None-Match' : 'If-Match']: validator },
+  }).catch((error: unknown) => {
+    if (create && error instanceof SyncConflictError) {
+      throw new Error('A WebDAV file already exists at this URL.', { cause: error });
+    }
+    throw error;
+  });
   const nextEtag = strongEtag(response.headers.get('ETag'));
-  if (nextEtag) return nextEtag;
+  if (nextEtag) {
+    return nextEtag;
+  }
   const snapshot = await readWebDav(setup);
   if (!snapshot.etag || !isSameBytes(snapshot.bytes, bytes)) {
     throw new Error('The WebDAV upload could not be confirmed. Check the destination before retrying.');

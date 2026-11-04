@@ -181,7 +181,7 @@ describe('webdav', () => {
       expect(await getWebDavCredentials(result.record.id)).toBeUndefined();
     });
 
-    it('uses a distinct recovery record when an existing Local database has the same name', async () => {
+    it('keeps an existing Local database when creating one with the same name', async () => {
       const local = await createRecord({
         id: 'existing',
         type: 'local',
@@ -193,7 +193,7 @@ describe('webdav', () => {
       const result = await createWebDavRecord({ databaseName: 'Vault', password, setupInput: setup });
       expect(result.outcome).toBe('saved-locally');
       expect(result.record.id).not.toBe(local.id);
-      expect(result.record.kdbx.name).not.toBe(local.kdbx.name);
+      expect(result.record.kdbx.name).toBe(local.kdbx.name);
       expect(await getRecord(local.id)).toEqual(local);
     });
 
@@ -219,7 +219,7 @@ describe('webdav', () => {
       );
       const creation = createWebDavRecord({ databaseName: 'Vault', password, setupInput: setup });
       if (kind === 'removed') {
-        await expect(creation).rejects.toMatchObject({ name: 'AbortError' });
+        await expect(creation).rejects.toThrow('Record not found.');
         expect(await getRecords()).toEqual([]);
       } else {
         const result = await creation;

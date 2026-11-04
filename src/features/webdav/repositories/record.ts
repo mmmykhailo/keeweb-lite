@@ -17,7 +17,9 @@ export const insertWebDavRecord = async (
     const nextRecord = { ...record, source: { ...record.source, credentials: credentials.slice() } };
     if (!recoveryBytes) {
       const created = await createRecord(nextRecord);
-      if (created.type !== 'webdav') throw new Error('WebDAV database not found.');
+      if (created.type !== 'webdav') {
+        throw new Error('WebDAV database not found.');
+      }
       return created;
     }
     const updated = await updateRecord(record.id, (current) => {
@@ -26,6 +28,8 @@ export const insertWebDavRecord = async (
       }
       return nextRecord;
     });
-    if (updated.type !== 'webdav') throw new Error('WebDAV database not found.');
+    if (updated.type !== 'webdav') {
+      throw new Error('WebDAV database not found.');
+    }
     return updated;
   });

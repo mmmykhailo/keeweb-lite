@@ -1,11 +1,5 @@
 import type kdbx from '@/utils/kdbxweb';
-import {
-  createRecord,
-  getRecord,
-  getRecords,
-  type PersistedFileRecord,
-  type WebDavFileRecord,
-} from '@/repositories/record';
+import { createRecord, getRecord, type PersistedFileRecord, type WebDavFileRecord } from '@/repositories/record';
 import { insertWebDavRecord } from '@/features/webdav/repositories/record';
 import {
   readWebDav,
@@ -23,12 +17,16 @@ const encryptConnection = async (setup: WebDavSetup, database: kdbx.Kdbx) => {
   const container = kdbx.Kdbx.create(database.credentials, 'WebDAV connection');
   if (database.versionMajor < 4) {
     const rounds = database.header.keyEncryptionRounds;
-    if (!rounds || rounds < 1) throw new Error('The database uses an unsupported key transformation setting.');
+    if (!rounds || rounds < 1) {
+      throw new Error('The database uses an unsupported key transformation setting.');
+    }
     container.setVersion(3);
     container.header.keyEncryptionRounds = rounds;
   } else {
     const sourceParameters = database.header.kdfParameters;
-    if (!sourceParameters) throw new Error('The database uses an unsupported key derivation setting.');
+    if (!sourceParameters) {
+      throw new Error('The database uses an unsupported key derivation setting.');
+    }
     const stream = new kdbx.BinaryStream();
     sourceParameters.write(stream);
     container.header.kdfParameters = kdbx.VarDictionary.read(new kdbx.BinaryStream(stream.getWrittenBytes()));
@@ -51,6 +49,7 @@ export const importWebDavRecord = async ({
   keyFile?: FileList;
 }) => {
   const setup = webdavConnectionSchema.parse(input);
+  const { pathname } = new URL(setup.url);
   const { bytes, etag } = await readWebDav(setup);
   const key = await toKey(keyFile);
   const database = await unlockDatabase({
@@ -66,7 +65,7 @@ export const importWebDavRecord = async ({
       source: { url: setup.url, etag },
       key,
       kdbx: {
-        name: decodeURIComponent(new URL(setup.url).pathname.split('/').at(-1) || 'webdav.kdbx'),
+        name: decodeURIComponent(pathname.slice(pathname.lastIndexOf('/') + 1)),
         encryptedBytes: bytes,
       },
       version: 0,
@@ -95,15 +94,10 @@ export const createWebDavRecord = async ({
   const setup = webdavConnectionSchema.parse(setupInput);
   const { name, kdbxFileName } = validateNewDatabaseInput(databaseName, password);
   const { encryptedBytes, generatedKey } = await createEmptyDatabase({ name, password, useKeyFile });
-  const records = await getRecords();
-  let recoveryName = kdbxFileName;
-  while (records.some((row) => row.type === 'local' && row.kdbx.name === recoveryName)) {
-    recoveryName = `${name}-recovery-${crypto.randomUUID()}.kdbx`;
-  }
   const recovery = await createRecord({
     id: crypto.randomUUID(),
     type: 'local',
-    kdbx: { name: recoveryName, encryptedBytes },
+    kdbx: { name: kdbxFileName, encryptedBytes },
     key: generatedKey?.key,
   });
   const generatedKeyFile = generatedKey ? { bytes: generatedKey.keyFileBytes, name: generatedKey.key.name } : undefined;
@@ -129,9 +123,7 @@ export const createWebDavRecord = async ({
     );
     return { outcome: 'created', record, generatedKeyFile };
   } catch (cause) {
-    const record = await getRecord(recovery.id).catch(() => {
-      throw new DOMException('Local recovery was removed.', 'AbortError');
-    });
+    const record = await getRecord(recovery.id);
     return {
       outcome: 'saved-locally',
       record,

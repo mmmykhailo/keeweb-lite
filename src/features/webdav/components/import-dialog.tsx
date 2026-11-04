@@ -39,7 +39,9 @@ export const ImportWebDavDialog = ({ open, onOpenChange, onSuccess }: DialogProp
   });
 
   const handleOpenChange = (nextOpen: boolean) => {
-    if (!isSubmitting) onOpenChange(nextOpen);
+    if (!isSubmitting) {
+      onOpenChange(nextOpen);
+    }
   };
 
   const submit = handleSubmit(async ({ url, username, password, databasePassword, keyFile }) => {
@@ -59,7 +61,9 @@ export const ImportWebDavDialog = ({ open, onOpenChange, onSuccess }: DialogProp
         showCloseButton={!isSubmitting}
         className="max-h-[calc(100dvh-2rem)] overflow-hidden sm:max-w-lg"
         onAnimationEnd={(event) => {
-          if (event.currentTarget.dataset.state === 'closed') reset();
+          if (event.currentTarget.dataset.state === 'closed') {
+            reset();
+          }
         }}
       >
         <DialogHeader>
@@ -72,8 +76,11 @@ export const ImportWebDavDialog = ({ open, onOpenChange, onSuccess }: DialogProp
         <form
           className="max-h-[calc(100dvh-12rem)] space-y-3 overflow-y-auto pr-1"
           onSubmit={(event) => {
-            if (isSubmitting) event.preventDefault();
-            else void submit(event);
+            if (isSubmitting) {
+              event.preventDefault();
+            } else {
+              void submit(event);
+            }
           }}
         >
           <Controller

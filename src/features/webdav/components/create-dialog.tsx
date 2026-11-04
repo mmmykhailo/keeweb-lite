@@ -60,7 +60,9 @@ export const CreateWebDavDialog = ({ open, onOpenChange, onSuccess }: DialogProp
   });
 
   const handleOpenChange = (nextOpen: boolean) => {
-    if (!isSubmitting) onOpenChange(nextOpen);
+    if (!isSubmitting) {
+      onOpenChange(nextOpen);
+    }
   };
 
   const submit = handleSubmit(async ({ databaseName, url, username, serverPassword, password, useKeyFile }) => {
@@ -73,11 +75,15 @@ export const CreateWebDavDialog = ({ open, onOpenChange, onSuccess }: DialogProp
       });
 
       onSuccess();
-      if (result.generatedKeyFile)
+      if (result.generatedKeyFile) {
         downloadBytes({ bytes: result.generatedKeyFile.bytes, fileName: result.generatedKeyFile.name });
+      }
       onOpenChange(false);
-      if (result.outcome === 'created') toast.success('WebDAV database created.');
-      else toast.error(getErrorMessage({ error: result.error, fallback: 'WebDAV database saved locally.' }));
+      if (result.outcome === 'created') {
+        toast.success('WebDAV database created.');
+      } else {
+        toast.error(getErrorMessage({ error: result.error, fallback: 'WebDAV database saved locally.' }));
+      }
     } catch (error) {
       toast.error(getErrorMessage({ error, fallback: 'WebDAV database creation failed.' }));
     }
@@ -108,7 +114,9 @@ export const CreateWebDavDialog = ({ open, onOpenChange, onSuccess }: DialogProp
         showCloseButton={!isSubmitting}
         className="max-h-[calc(100dvh-2rem)] overflow-hidden sm:max-w-lg"
         onAnimationEnd={(event) => {
-          if (event.currentTarget.dataset.state === 'closed') reset();
+          if (event.currentTarget.dataset.state === 'closed') {
+            reset();
+          }
         }}
       >
         <DialogHeader>
@@ -121,8 +129,11 @@ export const CreateWebDavDialog = ({ open, onOpenChange, onSuccess }: DialogProp
         <form
           className="max-h-[calc(100dvh-12rem)] space-y-3 overflow-y-auto pr-1"
           onSubmit={(event) => {
-            if (isSubmitting) event.preventDefault();
-            else void submit(event);
+            if (isSubmitting) {
+              event.preventDefault();
+            } else {
+              void submit(event);
+            }
           }}
         >
           {textFields.map(({ name, label, type, autoComplete }) => (
