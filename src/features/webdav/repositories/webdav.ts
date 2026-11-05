@@ -1,5 +1,4 @@
 import * as z from 'zod/mini';
-import { loadKdbxweb } from '@/services/database';
 import { isSameBytes } from '@/utils/buffer';
 import { SyncConflictError } from '@/services/provider';
 
@@ -78,7 +77,6 @@ export type WebDavSetup = z.infer<typeof webdavConnectionSchema>;
 
 const request = async (setup: WebDavSetup, options: RequestInit) => {
   const { url, username, password } = webdavConnectionSchema.parse(setup);
-  const kdbx = await loadKdbxweb();
   const response = await fetch(url, {
     ...options,
     mode: 'cors',
@@ -86,7 +84,7 @@ const request = async (setup: WebDavSetup, options: RequestInit) => {
     cache: 'no-store',
     redirect: 'error',
     headers: {
-      Authorization: `Basic ${kdbx.ByteUtils.bytesToBase64(kdbx.ByteUtils.stringToBytes(`${username}:${password}`))}`,
+      Authorization: `Basic ${btoa(Array.from(new TextEncoder().encode(`${username}:${password}`), (byte) => String.fromCharCode(byte)).join(''))}`,
       ...Object.fromEntries(new Headers(options.headers)),
     },
   }).catch((cause: unknown) => {
@@ -125,7 +123,7 @@ export const writeWebDav = async ({
   create = false,
 }: {
   setup: WebDavSetup;
-  bytes: Uint8Array;
+  bytes: Uint8Array<ArrayBuffer>;
   etag?: string;
   create?: boolean;
 }) => {
@@ -135,7 +133,7 @@ export const writeWebDav = async ({
   }
   const response = await request(setup, {
     method: 'PUT',
-    body: bytes.slice().buffer,
+    body: bytes,
     headers: { 'Content-Type': 'application/octet-stream', [create ? 'If-None-Match' : 'If-Match']: validator },
   }).catch((error: unknown) => {
     if (create && error instanceof SyncConflictError) {

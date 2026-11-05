@@ -69,6 +69,19 @@ describe('workspace sync', () => {
       expect(saved.type === 'webdav' && isModified(saved)).toBe(false);
     });
 
+    it('keeps a clean local database when the downloaded file cannot be unlocked', async () => {
+      using context = await fixture();
+      const { session, record, fetch } = context;
+      const beforeSync = await getRecord(record.id);
+      fetch.mockImplementation(async () => response(new Uint8Array([1, 2, 3])));
+
+      render(<Harness initial={session} />);
+
+      await waitFor(() => expect(screen.getByText('Sync error')).toBeInTheDocument());
+      expect(await getRecord(record.id)).toEqual(beforeSync);
+      expect(screen.getByRole('button', { name: /Test Entry test-user/ })).toBeInTheDocument();
+    });
+
     it('keeps failed uploads locally and resumes only after an explicit retry', async () => {
       using context = await fixture();
       const { session, record, bytes, fetch } = context;

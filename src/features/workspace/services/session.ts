@@ -101,18 +101,17 @@ export const syncSession = async ({
         ? synced.encryptedBytes
         : await toEncryptedBytes(await merge(stored.kdbx.encryptedBytes, synced.encryptedBytes));
 
+      const nextDatabase = await load(encryptedBytes);
       const nextRecord = await updateSyncableRecord(stored.id, (current) => {
-        const next = {
+        return {
           ...current,
+          source: synced.source,
           kdbx: { ...current.kdbx, encryptedBytes },
           syncedVersion: snapshot.version ?? 0,
         };
-        if (next.type === 'webdav' && 'url' in synced.source) return { ...next, source: synced.source };
-        if (next.type === 'google-drive' && 'id' in synced.source) return { ...next, source: synced.source };
-        throw new Error('The provider returned an invalid sync source.');
       });
 
-      return { database: await load(encryptedBytes), record: nextRecord };
+      return { database: nextDatabase, record: nextRecord };
     });
 
   const syncOnce = async (): Promise<SyncSessionResult> => {

@@ -178,12 +178,15 @@ export const updateRecord = async (recordId: string, update: (record: PersistedF
   });
 };
 
-export const updateSyncableRecord = async (recordId: string, update: (record: SyncableRecord) => SyncableRecord) => {
+export const updateSyncableRecord = async (
+  recordId: string,
+  update: (record: SyncableRecord) => Omit<SyncableRecord, 'source'> & { source: SyncableRecord['source'] },
+) => {
   return updateRecord(recordId, (record) => {
     if (!isSyncable(record)) {
       throw new Error('Record does not sync.');
     }
 
-    return update(record);
+    return fileRecordSchema.parse(update(record));
   });
 };

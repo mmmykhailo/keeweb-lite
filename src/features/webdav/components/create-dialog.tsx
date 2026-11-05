@@ -75,15 +75,11 @@ export const CreateWebDavDialog = ({ open, onOpenChange, onSuccess }: DialogProp
       });
 
       onSuccess();
-      if (result.generatedKeyFile) {
-        downloadBytes({ bytes: result.generatedKeyFile.bytes, fileName: result.generatedKeyFile.name });
+      if (result.keyFileBytes && result.keyFileName) {
+        downloadBytes({ bytes: result.keyFileBytes, fileName: result.keyFileName });
       }
       onOpenChange(false);
-      if (result.outcome === 'created') {
-        toast.success('WebDAV database created.');
-      } else {
-        toast.error(getErrorMessage({ error: result.error, fallback: 'WebDAV database saved locally.' }));
-      }
+      toast.success('WebDAV database created.');
     } catch (error) {
       toast.error(getErrorMessage({ error, fallback: 'WebDAV database creation failed.' }));
     }
@@ -128,13 +124,7 @@ export const CreateWebDavDialog = ({ open, onOpenChange, onSuccess }: DialogProp
 
         <form
           className="max-h-[calc(100dvh-12rem)] space-y-3 overflow-y-auto pr-1"
-          onSubmit={(event) => {
-            if (isSubmitting) {
-              event.preventDefault();
-            } else {
-              void submit(event);
-            }
-          }}
+          onSubmit={(event) => void submit(event)}
         >
           {textFields.map(({ name, label, type, autoComplete }) => (
             <Controller

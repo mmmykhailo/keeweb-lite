@@ -1,9 +1,11 @@
 import type kdbxweb from '@/utils/kdbxweb';
 import { asArrayBuffer, asUint8Array } from '@/utils/buffer';
+import { createCipher } from '@/services/crypto';
 import { Lock } from '@/utils/lock';
 
-// Keep the KDBX dependencies (~245 KB) out of the initial unlock page bundle.
-export const loadKdbxweb = async () => (await import('@/utils/kdbxweb')).default;
+// kdbxweb, xmldom and argon2 are about 245 KB, so they load on first use instead of with the unlock page.
+// import() is cached per module, so calling this again reuses the loaded module.
+const loadKdbxweb = async () => (await import('@/utils/kdbxweb')).default;
 
 export class InvalidKeyError extends Error {
   constructor(options?: ErrorOptions) {
@@ -103,3 +105,23 @@ export const cloneDatabase = async (database: kdbxweb.Kdbx): Promise<kdbxweb.Kdb
 
   return kdbxweb.Kdbx.load(encryptedBytes, database.credentials);
 };
+
+export const encryptDatabaseValue = async ({
+  database,
+  label,
+  value,
+}: {
+  database: kdbxweb.Kdbx;
+  label: string;
+  value: string;
+}) => createCipher(label, 'PBKDF2').encrypt({ secret: await database.credentials.getHash(), value });
+
+export const decryptDatabaseValue = async ({
+  database,
+  label,
+  value,
+}: {
+  database: kdbxweb.Kdbx;
+  label: string;
+  value: Uint8Array;
+}) => createCipher(label, 'PBKDF2').decrypt({ secret: await database.credentials.getHash(), value });

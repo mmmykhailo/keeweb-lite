@@ -80,8 +80,8 @@ describe('webdav', () => {
       const { record } = context;
       await removeRecord(record.id);
       const attempts = await Promise.allSettled([
-        insertWebDavRecord(record, new Uint8Array([1])),
-        insertWebDavRecord({ ...record, id: 'duplicate' }, new Uint8Array([2])),
+        insertWebDavRecord(record),
+        insertWebDavRecord({ ...record, id: 'duplicate' }),
       ]);
       expect(attempts.map((result) => result.status).sort()).toEqual(['fulfilled', 'rejected']);
       expect(await getWebDavCredentials('duplicate')).toBeUndefined();
@@ -162,81 +162,27 @@ describe('webdav', () => {
     });
   });
 
-  describe('WebDAV creation recovery', () => {
-    it.each(['failure', 'exists', 'uncertain'])('keeps a local database and generated key after %s', async (kind) => {
+  describe('WebDAV creation', () => {
+    it.each(['failure', 'exists', 'uncertain'])('leaves no record after %s', async (kind) => {
       const fetch = vi.fn().mockImplementation(async (_url, options: RequestInit) => {
-        expect((await getRecords())[0].type).toBe('local');
+        expect(await getRecords()).toEqual([]);
         expect(new Headers(options.headers).get('If-None-Match')).toBe('*');
-        if (kind === 'exists') return new Response(null, { status: 412 });
-        if (kind === 'uncertain') return response(new Uint8Array([9]));
+        if (kind === 'exists') {
+          return new Response(null, { status: 412 });
+        }
+        if (kind === 'uncertain') {
+          return response(new Uint8Array([9]));
+        }
         throw new TypeError('offline');
       });
       using _fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(fetch);
-      if (kind === 'uncertain') fetch.mockResolvedValueOnce(new Response(null));
-      const result = await createWebDavRecord({
-        databaseName: 'Vault',
-        password,
-        useKeyFile: true,
-        setupInput: setup,
-      });
-      expect(result.outcome).toBe('saved-locally');
-      expect(result.record.type).toBe('local');
-      expect(result.generatedKeyFile?.bytes.length).toBeGreaterThan(0);
-      await expect(
-        unlockDatabase({
-          encryptedBytes: result.record.kdbx.encryptedBytes,
-          password,
-          keyFileHashBase64: result.record.key?.hash,
-        }),
-      ).resolves.toBeDefined();
-      expect(await getWebDavCredentials(result.record.id)).toBeUndefined();
-    });
-
-    it('keeps an existing Local database when creating one with the same name', async () => {
-      const local = await createRecord({
-        id: 'existing',
-        type: 'local',
-        kdbx: { name: 'Vault.kdbx', encryptedBytes: new Uint8Array([1]) },
-      });
-      using _fetch = vi
-        .spyOn(globalThis, 'fetch')
-        .mockImplementation(vi.fn().mockRejectedValue(new TypeError('offline')));
-      const result = await createWebDavRecord({ databaseName: 'Vault', password, setupInput: setup });
-      expect(result.outcome).toBe('saved-locally');
-      expect(result.record.id).not.toBe(local.id);
-      expect(result.record.kdbx.name).toBe(local.kdbx.name);
-      expect(await getRecord(local.id)).toEqual(local);
-    });
-
-    it('promotes an unchanged recovery row only after confirmed creation', async () => {
-      using _fetch = vi
-        .spyOn(globalThis, 'fetch')
-        .mockImplementation(vi.fn().mockResolvedValue(response(new Uint8Array())));
-      const result = await createWebDavRecord({ databaseName: 'Vault', password, setupInput: setup });
-      expect(result.outcome).toBe('created');
-      expect(result.record.type).toBe('webdav');
-      expect(await getWebDavCredentials(result.record.id)).toBeInstanceOf(Uint8Array);
-      expect(await getRecords()).toHaveLength(1);
-    });
-
-    it.each(['removed', 'edited'])('never replaces a recovery row %s during upload', async (kind) => {
-      using _fetch1 = vi.spyOn(globalThis, 'fetch').mockImplementation(
-        vi.fn().mockImplementation(async () => {
-          const row = (await getRecords())[0];
-          if (kind === 'removed') await removeRecord(row.id);
-          else await set(RECORDS_STORAGE_KEY, [{ ...row, kdbx: { ...row.kdbx, encryptedBytes: new Uint8Array([7]) } }]);
-          return response(new Uint8Array());
-        }),
-      );
-      const creation = createWebDavRecord({ databaseName: 'Vault', password, setupInput: setup });
-      if (kind === 'removed') {
-        await expect(creation).rejects.toThrow('Record not found.');
-        expect(await getRecords()).toEqual([]);
-      } else {
-        const result = await creation;
-        expect(result.outcome).toBe('saved-locally');
-        expect(result.record.kdbx.encryptedBytes).toEqual(new Uint8Array([7]));
+      if (kind === 'uncertain') {
+        fetch.mockResolvedValueOnce(new Response(null));
       }
+
+      await expect(createWebDavRecord({ databaseName: 'Vault', password, setupInput: setup })).rejects.toThrow();
+
+      expect(await getRecords()).toEqual([]);
     });
   });
 
@@ -271,28 +217,6 @@ describe('webdav', () => {
       const current = await getRecord(record.id);
       if (current.type !== 'webdav') throw new Error('Expected WebDAV.');
       expect(isModified(current)).toBe(false);
-    });
-
-    it('decrypts credentials once per unlocked session and shares them across sync passes', async () => {
-      using context = await imported();
-      const { record, fetch, bytes } = context;
-      const session = await unlockSession({ record, password });
-      using decrypt = vi.spyOn(crypto.subtle, 'decrypt');
-      fetch.mockClear();
-      fetch.mockImplementation(() => Promise.resolve(response(bytes, '"new"')));
-
-      await syncSession(session);
-      await syncSession(session);
-
-      expect(
-        decrypt.mock.calls.filter(([algorithm]) => typeof algorithm !== 'string' && algorithm.name === 'AES-GCM'),
-      ).toHaveLength(1);
-      expect(fetch.mock.calls.map((call) => call[1].method)).toEqual(['HEAD', 'GET', 'HEAD']);
-      const reopened = await unlockSession({ record: await getRecord(record.id), password });
-      await syncSession(reopened);
-      expect(
-        decrypt.mock.calls.filter(([algorithm]) => typeof algorithm !== 'string' && algorithm.name === 'AES-GCM'),
-      ).toHaveLength(2);
     });
 
     it('reloads and merges the new remote revision after a conflicting PUT', async () => {
@@ -336,7 +260,7 @@ describe('webdav', () => {
       expect(await getRecord(record.id)).toEqual(saved);
     });
 
-    it.each(['identity', 'factors', 'missing', 'weak'])('retains the exportable cache on %s failure', async (kind) => {
+    it.each(['factors', 'missing', 'weak'])('retains the exportable cache on %s failure', async (kind) => {
       using context = await imported();
       const { record, db, fetch, bytes } = context;
       db.meta.name = 'Local';

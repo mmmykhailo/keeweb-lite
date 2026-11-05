@@ -22,12 +22,7 @@ export const useSync = ({ record, database, version, setSession }: UseSyncProps)
     const syncedSession = await syncSession({ record, database });
 
     setSession((previousSession) => {
-      if (
-        !previousSession ||
-        !isMounted() ||
-        previousSession.record.id !== record.id ||
-        previousSession.database.credentials !== database.credentials
-      ) {
+      if (!previousSession) {
         return previousSession;
       }
 

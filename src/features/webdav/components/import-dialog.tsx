@@ -75,13 +75,7 @@ export const ImportWebDavDialog = ({ open, onOpenChange, onSuccess }: DialogProp
 
         <form
           className="max-h-[calc(100dvh-12rem)] space-y-3 overflow-y-auto pr-1"
-          onSubmit={(event) => {
-            if (isSubmitting) {
-              event.preventDefault();
-            } else {
-              void submit(event);
-            }
-          }}
+          onSubmit={(event) => void submit(event)}
         >
           <Controller
             control={control}

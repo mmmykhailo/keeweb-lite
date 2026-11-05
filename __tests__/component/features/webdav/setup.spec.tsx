@@ -1,7 +1,7 @@
 import * as downloadUtils from '@/utils/download';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
-import { act, fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { toast } from 'sonner';
 import { ProviderMenu } from '@/features/unlock/components/provider-menu';
@@ -34,9 +34,8 @@ describe('WebDAV setup', () => {
     },
   );
 
-  it.each(['created', 'saved locally'])(
-    'blocks dismissal during creation and handles the %s outcome',
-    async (outcome) => {
+  describe('create', () => {
+    it.each(['created', 'failed'])('blocks dismissal during creation and handles %s uploads', async (outcome) => {
       const upload = Promise.withResolvers<Response>();
       using fetch = vi.spyOn(globalThis, 'fetch').mockReturnValue(upload.promise);
       using download = vi.spyOn(downloadUtils, 'downloadBytes').mockImplementation(() => {});
@@ -54,35 +53,43 @@ describe('WebDAV setup', () => {
       await user.click(screen.getByLabelText('Use key file (generated and downloaded automatically)'));
       await user.click(screen.getByRole('button', { name: 'Create' }));
       await waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+      expect(await getRecords()).toEqual([]);
       expect(screen.queryByRole('button', { name: 'Close' })).not.toBeInTheDocument();
+      const submit = screen.getByRole('button', { name: 'Creating...' });
+      expect(submit).toBeDisabled();
+      await user.click(submit);
+      await user.keyboard('{Enter}');
       await user.keyboard('{Escape}');
       const overlay = document.querySelector('[data-slot="dialog-overlay"]');
-      if (!overlay) throw new Error('Missing dialog overlay');
+      if (!overlay) {
+        throw new Error('Missing dialog overlay');
+      }
       await user.click(overlay);
-      const form = screen.getByRole('button', { name: 'Creating...' }).closest('form');
-      if (!form) throw new Error('Missing creation form');
-      fireEvent.submit(form);
       expect(screen.getByRole('dialog')).toBeInTheDocument();
       expect(fetch).toHaveBeenCalledOnce();
+
       await act(async () =>
         upload.resolve(
-          new Response(null, {
-            status: outcome === 'created' ? 201 : 500,
-            headers: { ETag: '"created"' },
-          }),
+          new Response(null, { status: outcome === 'created' ? 201 : 500, headers: { ETag: '"created"' } }),
         ),
       );
-      await waitFor(() => expect(onCreated).toHaveBeenCalledOnce());
-      expect(download).toHaveBeenCalledOnce();
-      expect((await getRecords())[0].type).toBe(outcome === 'created' ? 'webdav' : 'local');
+
       if (outcome === 'created') {
+        await waitFor(() => expect(onCreated).toHaveBeenCalledOnce());
+        expect(download).toHaveBeenCalledOnce();
+        expect(download).toHaveBeenCalledWith({ bytes: expect.any(Uint8Array), fileName: 'Vault.keyx' });
+        expect((await getRecords())[0].type).toBe('webdav');
         expect(success).toHaveBeenCalledWith('WebDAV database created.');
         expect(error).not.toHaveBeenCalled();
+        await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
       } else {
+        await waitFor(() => expect(error).toHaveBeenCalledWith('WebDAV request failed with HTTP 500.'));
+        expect(await getRecords()).toEqual([]);
+        expect(onCreated).not.toHaveBeenCalled();
+        expect(download).not.toHaveBeenCalled();
         expect(success).not.toHaveBeenCalled();
-        expect(error).toHaveBeenCalledWith(expect.stringContaining('Database saved locally.'));
+        expect(screen.getByRole('button', { name: 'Create' })).toBeEnabled();
       }
-      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    },
-  );
+    });
+  });
 });
